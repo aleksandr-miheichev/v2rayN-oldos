@@ -1,4 +1,5 @@
 name: finalize release
+# Part of this fork's release pipeline; the product branch is oldos.
 
 # A release starts life as a prerelease with no assets, so that nothing is
 # advertised before the compatibility gate has had its say. This workflow
