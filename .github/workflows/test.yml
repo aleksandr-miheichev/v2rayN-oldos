@@ -14,7 +14,7 @@ on:
       - '.github/workflows/test.yml'
   pull_request:
     branches:
-      - master
+      - oldos
     paths:
       - 'v2rayN/ServiceLib/**'
       - 'v2rayN/ServiceLib.UdpTest/**'

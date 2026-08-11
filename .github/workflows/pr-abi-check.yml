@@ -1,4 +1,5 @@
 name: pull request ABI check
+# Part of this fork's release pipeline; the product branch is oldos.
 
 # The native SQLite library is the single dependency that decides whether this
 # fork still runs on the systems it exists for. A version bump can raise its
