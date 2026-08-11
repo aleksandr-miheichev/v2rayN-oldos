@@ -1,0 +1,28 @@
+<Project>
+
+  <!--
+    Fork-owned version override.
+
+    Releases of this fork are tagged "<upstream version>.<fork build>", for
+    example 7.24.6.3, so that a rebuild of unchanged upstream code still
+    announces itself as newer. The application compares its own assembly
+    version against the tag of the newest release, so the assembly has to carry
+    the same four components; a three-component version would compare equal and
+    the update would never be offered.
+
+    This lives in Directory.Build.targets rather than in Directory.Build.props
+    for two reasons: MSBuild imports it after the project file, so it can
+    override the upstream <Version>, and the file does not exist upstream,
+    which means it can never produce a rebase conflict.
+
+    FORK_VERSION is set by the build workflow from the release tag. When it is
+    empty (any local build), the upstream version is used unchanged.
+  -->
+  <PropertyGroup Condition="'$(FORK_VERSION)' != ''">
+    <Version>$(FORK_VERSION)</Version>
+    <AssemblyVersion>$(FORK_VERSION)</AssemblyVersion>
+    <FileVersion>$(FORK_VERSION)</FileVersion>
+    <InformationalVersion>$(FORK_VERSION)</InformationalVersion>
+  </PropertyGroup>
+
+</Project>
