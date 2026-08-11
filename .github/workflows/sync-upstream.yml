@@ -1,4 +1,5 @@
 name: sync with upstream
+# Part of this fork's release pipeline; the product branch is oldos.
 
 # Keeps this fork current with 2dust/v2rayN.
 #
