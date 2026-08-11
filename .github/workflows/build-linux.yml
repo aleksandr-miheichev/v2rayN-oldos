@@ -125,6 +125,8 @@ jobs:
     name: verify compatibility with older systems
     needs: [ deb, rpm ]
     uses: ./.github/workflows/verify-compat.yml
+    with:
+      release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
 
   publish-manifest:
     name: attach the build manifest to the release
