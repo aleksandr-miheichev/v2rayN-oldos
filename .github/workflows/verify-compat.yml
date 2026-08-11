@@ -105,7 +105,8 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates xvfb procps findutils
+          # xauth is a separate package and xvfb-run refuses to start without it.
+          apt-get install -y --no-install-recommends ca-certificates xvfb xauth procps findutils
 
       - name: Download the built Debian packages
         uses: actions/download-artifact@v8
@@ -203,7 +204,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dnf -y install findutils procps-ng xorg-x11-server-Xvfb
+          # xauth ships separately here too, and xvfb-run needs it.
+          dnf -y install findutils procps-ng xorg-x11-server-Xvfb xorg-x11-xauth
 
       - name: Download the built RPM packages
         uses: actions/download-artifact@v8
