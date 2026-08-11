@@ -19,6 +19,11 @@ on:
         required: false
         type: string
         default: '2.34'
+      release_tag:
+        description: The tag being released, recorded in the build manifest.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -82,7 +87,7 @@ jobs:
             --output manifest.json \
             --assets v2rayN/ServiceLib/obj/project.assets.json \
             --package-root unpacked \
-            --version "${GITHUB_REF_NAME}" \
+            --version '${{ inputs.release_tag }}' \
             --commit "${GITHUB_SHA}" \
             --dotnet-sdk "$(dotnet --version)"
 
