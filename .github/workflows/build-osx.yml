@@ -71,10 +71,16 @@ jobs:
         path: v2rayN*.dmg
         if-no-files-found: error
 
+  verify:
+    name: verify compatibility with older macOS
+    if: inputs.release_tag != ''
+    needs: dmg
+    uses: ./.github/workflows/verify-macos.yml
+
   release-dmg:
     name: sign and upload macOS dmg
     if: inputs.release_tag != ''
-    needs: dmg
+    needs: [ dmg, verify ]
     strategy:
       matrix:
         arch: [ x64, arm64 ]
