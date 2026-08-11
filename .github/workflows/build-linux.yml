@@ -126,6 +126,25 @@ jobs:
     needs: [ deb, rpm ]
     uses: ./.github/workflows/verify-compat.yml
 
+  publish-manifest:
+    name: attach the build manifest to the release
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Download the build manifest
+      uses: actions/download-artifact@v8
+      with: { name: build-manifest, path: dist }
+    # The manifest is what lets the next release report changes that never
+    # produced a commit, so it travels with the release rather than expiring
+    # with the workflow artifacts.
+    - name: Upload the build manifest to the release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        file: dist/manifest.json
+        tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+        prerelease: true
+        overwrite: true
+
   release-deb:
     name: sign and upload deb x64 arm64
     needs: [ deb, verify ]
