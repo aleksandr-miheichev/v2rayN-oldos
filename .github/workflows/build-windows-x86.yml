@@ -1,4 +1,5 @@
 name: release Windows x86
+# Part of this fork's release pipeline; the product branch is oldos.
 
 on:
   workflow_dispatch:
