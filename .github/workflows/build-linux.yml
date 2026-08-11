@@ -121,16 +121,21 @@ jobs:
       uses: actions/upload-artifact@v7
       with: { name: release-rpm, path: "dist/rpm/**/*.rpm", if-no-files-found: error }
 
+  verify:
+    name: verify compatibility with older systems
+    needs: [ deb, rpm ]
+    uses: ./.github/workflows/verify-compat.yml
+
   release-deb:
     name: sign and upload deb x64 arm64
-    needs: deb
+    needs: [ deb, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-deb, file_pattern: "*.deb" }
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
   release-rpm:
     name: sign and upload rpm x64 arm64
-    needs: rpm
+    needs: [ rpm, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm, file_pattern: "*.rpm" }
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
