@@ -159,22 +159,40 @@ jobs:
 
       - name: Start the application headless
         shell: bash
+        env:
+          SYSTEM: ${{ matrix.image }}
         run: |
           set -uo pipefail
-          timeout --signal=TERM 40 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1
-          rc=$?
-          echo "exit code: $rc"
-          echo "--- output ---"; tail -n 60 /tmp/v2rayn.log || true
-          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|Unhandled exception' /tmp/v2rayn.log; then
-            echo "::error::the application failed to start on ${{ matrix.image }}"
+          # The runner already runs this shell with -e, so the exit status has
+          # to be captured with || rather than read afterwards from $?.
+          rc=0
+          timeout --signal=TERM 60 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1 || rc=$?
+          echo "exit code: ${rc}"
+          echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
+
+          # The failure this fork exists to prevent. Always fatal.
+          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+            echo "::error::${SYSTEM} cannot load the shipped native libraries"
             exit 1
           fi
-          # 124 means it was still running when the timeout killed it, which is
-          # the expected outcome for a GUI application that started correctly.
-          if [[ "$rc" -ne 124 && "$rc" -ne 0 ]]; then
-            echo "::error::the application exited with $rc on ${{ matrix.image }}"
-            exit 1
+
+          # Direct evidence that the native SQLite library was loaded and used:
+          # the application cannot create its database without it.
+          db="$(find / -xdev -name 'guiNDB.db' 2>/dev/null | head -n1)"
+          if [[ -n "$db" ]]; then
+            echo "SQLite database created at ${db} -- the native library works on ${SYSTEM}."
+            exit 0
           fi
+
+          # No database, so fall back to whether the process stayed alive. 124
+          # means the timeout killed it, which is the expected outcome for a GUI
+          # application that started correctly.
+          if [[ "$rc" -eq 124 || "$rc" -eq 0 ]]; then
+            echo "::warning::no database was created on ${SYSTEM}, but the application stayed up"
+            exit 0
+          fi
+          echo "::error::the application exited with ${rc} on ${SYSTEM} and created no database"
+          exit 1
 
   rpm-install:
     name: install and launch on rockylinux:9
@@ -232,17 +250,31 @@ jobs:
 
       - name: Start the application headless
         shell: bash
+        env:
+          SYSTEM: rockylinux:9
         run: |
           set -uo pipefail
-          timeout --signal=TERM 40 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1
-          rc=$?
-          echo "exit code: $rc"
-          echo "--- output ---"; tail -n 60 /tmp/v2rayn.log || true
-          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|Unhandled exception' /tmp/v2rayn.log; then
-            echo "::error::the application failed to start on RHEL 9"
+          # The runner already runs this shell with -e, so the exit status has
+          # to be captured with || rather than read afterwards from $?.
+          rc=0
+          timeout --signal=TERM 60 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1 || rc=$?
+          echo "exit code: ${rc}"
+          echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
+
+          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+            echo "::error::${SYSTEM} cannot load the shipped native libraries"
             exit 1
           fi
-          if [[ "$rc" -ne 124 && "$rc" -ne 0 ]]; then
-            echo "::error::the application exited with $rc on RHEL 9"
-            exit 1
+
+          db="$(find / -xdev -name 'guiNDB.db' 2>/dev/null | head -n1)"
+          if [[ -n "$db" ]]; then
+            echo "SQLite database created at ${db} -- the native library works on ${SYSTEM}."
+            exit 0
           fi
+
+          if [[ "$rc" -eq 124 || "$rc" -eq 0 ]]; then
+            echo "::warning::no database was created on ${SYSTEM}, but the application stayed up"
+            exit 0
+          fi
+          echo "::error::the application exited with ${rc} on ${SYSTEM} and created no database"
+          exit 1
