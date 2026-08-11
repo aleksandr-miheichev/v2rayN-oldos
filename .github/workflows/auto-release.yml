@@ -1,0 +1,145 @@
+name: auto release
+
+# Publishes a release when upstream has moved, without waiting for upstream to
+# cut one of its own.
+#
+# Releases are batched rather than fired per commit: upstream often pushes
+# several commits in a row, and releasing each one separately would both waste
+# the whole build matrix and publish intermediate states. A release is cut only
+# once the newest commit has been quiet for a while.
+#
+# The release is created as a prerelease and holds no assets yet. The build
+# workflows upload into it, the compatibility gate decides whether they may,
+# and finalize-release.yml promotes it once it is complete.
+
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      ignore_quiet_period:
+        description: Release even if upstream committed a moment ago.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+env:
+  PRODUCT_BRANCH: oldos
+  QUIET_MINUTES: '90'
+
+jobs:
+  release:
+    name: cut a release if there is anything to release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the product branch
+        uses: actions/checkout@v7
+        with:
+          ref: oldos
+          fetch-depth: '0'
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          previous="$(git tag --list '[0-9]*.[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+          echo "Previous release tag: ${previous:-<none>}"
+
+          if [[ -n "$previous" ]]; then
+            new_commits="$(git rev-list --count "${previous}..HEAD")"
+          else
+            new_commits="$(git rev-list --count HEAD)"
+          fi
+          echo "Commits since that release: ${new_commits}"
+
+          if [[ "$new_commits" == "0" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing new to release."
+            exit 0
+          fi
+
+          # Quiet period: let a burst of upstream commits settle so one release
+          # covers the whole burst.
+          age_minutes=$(( ( $(date -u +%s) - $(git log -1 --format=%ct HEAD) ) / 60 ))
+          echo "Newest commit is ${age_minutes} minutes old (quiet period ${QUIET_MINUTES})."
+          if [[ "${{ inputs.ignore_quiet_period }}" != "true" && "$age_minutes" -lt "$QUIET_MINUTES" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Still inside the quiet period, waiting for the next run."
+            exit 0
+          fi
+
+          # The first three components track the upstream version; the fourth
+          # counts this fork's builds of it.
+          base="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' v2rayN/Directory.Build.props | head -n1)"
+          [[ -n "$base" ]] || { echo "Could not read <Version> from Directory.Build.props"; exit 1; }
+          last_rev="$(git tag --list "${base}.*" --sort=-v:refname | head -n1 | awk -F. '{print $4}')"
+          next_rev=$(( ${last_rev:-0} + 1 ))
+          tag="${base}.${next_rev}"
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Next release tag: ${tag}"
+
+      - name: Build the release notes
+        if: steps.decide.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          previous='${{ steps.decide.outputs.previous }}'
+          if [[ -n "$previous" ]]; then
+            python3 scripts/fork/release_notes.py --from "$previous" --to HEAD --output notes-body.md
+          else
+            echo "First release of this fork." > notes-body.md
+          fi
+
+          {
+            cat notes-body.md
+            printf '\n'
+            printf -- '---\n\n'
+            printf '### About this build\n\n'
+            printf 'This is an automated build of [2dust/v2rayN](https://github.com/2dust/v2rayN) '
+            printf 'at commit [`%s`](https://github.com/2dust/v2rayN/commit/%s), ' "$(git rev-parse --short HEAD)" "$(git rev-parse HEAD)"
+            printf 'unchanged except for keeping support for operating systems upstream no longer targets.\n\n'
+            printf '**Supported systems:** Ubuntu 22.04 and newer, Debian 12 and newer, RHEL 9 and newer, macOS 14 and newer, Windows on x64 and arm64.\n\n'
+            printf 'Every release is blocked unless the packages install and the application starts on Ubuntu 22.04, Debian 12 and Rocky Linux 9, '
+            printf 'and unless no shipped binary requires a glibc newer than 2.34.\n\n'
+            printf 'Verify a download with the `.sig` file next to it and `v2rayN-public-key.asc` from this release.\n'
+          } > notes.md
+
+          echo '--- release notes ---'
+          cat notes.md
+
+      - name: Create the release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create '${{ steps.decide.outputs.tag }}' \
+            --target "$(git rev-parse HEAD)" \
+            --title '${{ steps.decide.outputs.tag }}' \
+            --notes-file notes.md \
+            --prerelease
+
+      - name: Start the platform builds
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch is one of the two events that still start a run
+          # when triggered with the default token, which is why no personal
+          # access token is needed anywhere in this repository.
+          gh workflow run build-all.yml \
+            --ref "${PRODUCT_BRANCH}" \
+            -f release_tag='${{ steps.decide.outputs.tag }}'

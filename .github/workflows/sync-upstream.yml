@@ -1,0 +1,122 @@
+name: sync with upstream
+
+# Keeps this fork current with 2dust/v2rayN.
+#
+#   master  is a verbatim mirror of upstream and is never patched.
+#   oldos   is the product branch: the mirror plus this fork's patch stack,
+#           rebased on top of every upstream change.
+#
+# Rebasing rather than merging keeps the patch stack flat and readable, which
+# matters because it has to survive years of upstream churn. When a rebase
+# conflicts the run stops and opens an issue instead of pushing something
+# half-resolved or failing silently.
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/2dust/v2rayN.git
+  PRODUCT_BRANCH: oldos
+
+jobs:
+  sync:
+    name: rebase the patch stack onto upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the product branch
+        uses: actions/checkout@v7
+        with:
+          ref: oldos
+          fetch-depth: '0'
+
+      - name: Configure git
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM" 2>/dev/null || git remote set-url upstream "$UPSTREAM"
+          # Upstream tags are deliberately not fetched: this fork publishes its
+          # own four-component tags and an upstream tag reachable from the same
+          # history would confuse the version stamped into the build.
+          git fetch --no-tags upstream master
+
+      - name: Report what arrived
+        id: incoming
+        run: |
+          set -euo pipefail
+          count="$(git rev-list --count "${PRODUCT_BRANCH}..upstream/master" 2>/dev/null || echo 0)"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "New upstream commits: $count"
+          [[ "$count" == "0" ]] || git log --oneline "${PRODUCT_BRANCH}..upstream/master" | head -30
+
+      - name: Update the mirror branch
+        if: steps.incoming.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          git branch -f master upstream/master
+          git push --force-with-lease origin master
+
+      - name: Rebase the patch stack
+        if: steps.incoming.outputs.count != '0'
+        id: rebase
+        run: |
+          set -uo pipefail
+          if git rebase upstream/master; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git rebase --abort || true
+          fi
+
+      - name: Push the rebased patch stack
+        if: steps.rebase.outputs.conflict == 'false' && steps.incoming.outputs.count != '0'
+        run: git push --force-with-lease origin "${PRODUCT_BRANCH}"
+
+      - name: Open an issue when the rebase conflicts
+        if: steps.rebase.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One open issue at a time, otherwise every hourly run would file
+          # another one for the same conflict.
+          existing="$(gh issue list --state open --label upstream-conflict --json number --jq '.[0].number' || true)"
+          if [[ -n "$existing" ]]; then
+            echo "Issue #$existing is already open for this conflict."
+            exit 0
+          fi
+          gh label create upstream-conflict --color B60205 \
+            --description "The fork patch stack no longer applies to upstream" 2>/dev/null || true
+          body="$(printf '%s\n' \
+            'The hourly sync could not rebase the patch stack onto the latest upstream `master`.' \
+            '' \
+            'Releases are paused until this is resolved, because `oldos` no longer contains the newest upstream commits.' \
+            '' \
+            'To resolve it locally:' \
+            '' \
+            '```bash' \
+            'git fetch upstream master' \
+            'git checkout oldos' \
+            'git rebase upstream/master' \
+            '# resolve, then:' \
+            'git push --force-with-lease origin oldos' \
+            '```' \
+            '' \
+            'Upstream commits waiting to be integrated:' \
+            '' )"
+          body="${body}$(git log --oneline "${PRODUCT_BRANCH}..upstream/master" | head -30)"
+          gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
+          exit 1

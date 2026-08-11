@@ -1,0 +1,124 @@
+name: finalize release
+
+# A release starts life as a prerelease with no assets, so that nothing is
+# advertised before the compatibility gate has had its say. This workflow
+# closes the loop once the assets have arrived:
+#
+#   1. it appends the changes that produced no commit -- a dependency resolving
+#      to a new version, a different SDK patch, a rebuilt native library -- by
+#      diffing this build's manifest against the previous release's;
+#   2. it promotes the prerelease to a full release, which is what the
+#      application looks at when the user has not opted into prereleases.
+#
+# Completion is judged by the assets themselves rather than by watching build
+# jobs: the manifest is only attached after the gate passes, and a release
+# whose assets stopped changing a while ago is done.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Finalize this tag instead of the newest prerelease.
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-release
+  cancel-in-progress: false
+
+env:
+  SETTLE_MINUTES: '20'
+
+jobs:
+  finalize:
+    name: promote a completed prerelease
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: oldos
+          fetch-depth: '1'
+
+      - name: Find a prerelease that looks complete
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag='${{ inputs.tag }}'
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release list --limit 20 --json tagName,isPrerelease,isDraft \
+              --jq '[.[] | select(.isPrerelease and (.isDraft | not))][0].tagName' || true)"
+          fi
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No prerelease is waiting."
+            exit 0
+          fi
+          echo "Candidate: $tag"
+
+          assets="$(gh release view "$tag" --json assets --jq '.assets')"
+          if ! jq -e 'any(.[]; .name == "manifest.json")' <<<"$assets" >/dev/null; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "The compatibility gate has not attached a manifest yet."
+            exit 0
+          fi
+
+          newest="$(jq -r '[.[].updatedAt] | max' <<<"$assets")"
+          age=$(( ( $(date -u +%s) - $(date -u -d "$newest" +%s) ) / 60 ))
+          echo "Newest asset is ${age} minutes old (settle time ${SETTLE_MINUTES})."
+          if [[ "$age" -lt "$SETTLE_MINUTES" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Assets are still arriving."
+            exit 0
+          fi
+
+          previous="$(gh release list --limit 50 --json tagName,isPrerelease \
+            --jq "[.[] | select(.isPrerelease | not) | .tagName][0]" || true)"
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+
+      - name: Report the changes that produced no commit
+        if: steps.pick.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p drift
+          gh release download '${{ steps.pick.outputs.tag }}' --pattern manifest.json --dir drift/new --clobber
+
+          previous='${{ steps.pick.outputs.previous }}'
+          if [[ -n "$previous" ]]; then
+            gh release download "$previous" --pattern manifest.json --dir drift/old --clobber || true
+          fi
+
+          python3 scripts/fork/manifest.py diff \
+            drift/old/manifest.json drift/new/manifest.json --output drift/section.md
+
+          if [[ -s drift/section.md ]]; then
+            gh release view '${{ steps.pick.outputs.tag }}' --json body --jq .body > drift/body.md
+            printf '\n' >> drift/body.md
+            cat drift/section.md >> drift/body.md
+            gh release edit '${{ steps.pick.outputs.tag }}' --notes-file drift/body.md
+            echo "Appended:"; cat drift/section.md
+          else
+            echo "Nothing changed outside the commit history."
+          fi
+
+      - name: Promote the prerelease
+        if: steps.pick.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit '${{ steps.pick.outputs.tag }}' --prerelease=false --latest
+          echo "Released ${{ steps.pick.outputs.tag }}."
