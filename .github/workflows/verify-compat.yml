@@ -1,4 +1,5 @@
 name: verify compatibility with older systems
+# Part of this fork's release pipeline; the product branch is oldos.
 
 # Release gate. Nothing is uploaded to a release until every job here is green,
 # because a broken artifact that is already public cannot be un-published.
