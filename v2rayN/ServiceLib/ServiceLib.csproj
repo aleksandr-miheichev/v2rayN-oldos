@@ -15,7 +15,7 @@
 		  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
 		<PackageReference Include="sqlite-net-e" />
-		<PackageReference Include="Repobot.SQLite.Unofficial" />
+		<PackageReference Include="SourceGear.sqlite3" />
 		<PackageReference Include="NLog" />
 		<PackageReference Include="WebDav.Client" />
 		<PackageReference Include="YamlDotNet" />
