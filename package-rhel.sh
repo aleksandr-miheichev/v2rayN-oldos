@@ -505,6 +505,9 @@ Requires:       xdg-utils >= 1.1.3
 Requires:       coreutils >= 8.32
 Requires:       bash >= 5.1
 Requires:       freetype >= 2.10
+# Loaded with dlopen by the .NET runtime, so the automatic requires cannot see
+# it; without it the application dies at startup with FailFast.
+Requires:       libicu
 
 %description
 v2rayN Linux for Red Hat Enterprise Linux
