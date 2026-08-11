@@ -7,9 +7,16 @@ on:
         required: false
         type: string
 
-permissions: 
+permissions:
   actions: write
   contents: write
+
+# Releases here are cut by a schedule rather than by hand, so two of them can
+# overlap if a build runs long. Serialising them keeps a slower earlier release
+# from uploading its assets into a newer tag's release.
+concurrency:
+  group: release-all-platforms
+  cancel-in-progress: false
 
 jobs:
   public-key:
