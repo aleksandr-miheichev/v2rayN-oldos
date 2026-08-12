@@ -52,6 +52,10 @@ jobs:
         submodules: 'recursive'
         fetch-depth: '0'
 
+    - name: Apply the fork's submodule patches
+      shell: bash
+      run: bash scripts/fork/apply-fork-patches.sh
+
     - name: Purge SDKs
       shell: pwsh
       run: |
