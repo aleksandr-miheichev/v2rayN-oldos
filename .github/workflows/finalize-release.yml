@@ -11,13 +11,25 @@ name: finalize release
 #   2. it promotes the prerelease to a full release, which is what the
 #      application looks at when the user has not opted into prereleases.
 #
-# Completion is judged by the assets themselves rather than by watching build
-# jobs: the manifest is only attached after the gate passes, and a release
-# whose assets stopped changing a while ago is done.
+# Completion is judged by comparing the release's artifacts against the list in
+# scripts/fork/expected-release-assets.txt. An incomplete release simply stays
+# a prerelease, and report-failure.yml says which pipeline blocked it.
 
 on:
+  # Reacting to the builds finishing is the primary path; the schedule only
+  # catches a run whose lifecycle event never arrived. Relying on a schedule
+  # alone left releases sitting unpromoted, because GitHub delays and drops
+  # frequent cron triggers under load.
+  workflow_run:
+    workflows:
+      - release Linux
+      - release macOS
+      - release Windows
+      - release Windows desktop (Avalonia UI)
+      - release Windows x86
+    types: [ completed ]
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '11,41 * * * *'
   workflow_dispatch:
     inputs:
       tag:
@@ -33,7 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SETTLE_MINUTES: '20'
+  SETTLE_MINUTES: '3'
 
 jobs:
   finalize:
@@ -66,18 +78,33 @@ jobs:
           echo "Candidate: $tag"
 
           assets="$(gh release view "$tag" --json assets --jq '.assets')"
-          if ! jq -e 'any(.[]; .name == "manifest.json")' <<<"$assets" >/dev/null; then
+
+          # Completeness is judged by the artifacts themselves. Waiting for
+          # uploads to go quiet was an indirect signal and stalled forever
+          # whenever any job was re-run. manifest.json is in the list, so its
+          # presence still proves the compatibility gate passed.
+          missing=()
+          while IFS= read -r want; do
+            [[ -n "$want" && "$want" != \#* ]] || continue
+            jq -e --arg n "$want" 'any(.[]; .name == $n)' <<<"$assets" >/dev/null 2>&1 \
+              || missing+=("$want")
+          done < scripts/fork/expected-release-assets.txt
+
+          if ((${#missing[@]})); then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "The compatibility gate has not attached a manifest yet."
+            echo "Not complete yet, ${#missing[@]} artifacts are absent:"
+            printf '  %s\n' "${missing[@]}"
             exit 0
           fi
+          echo "Every expected artifact is present."
 
+          # A short pause only to avoid racing the upload of the final file.
           newest="$(jq -r '[.[].updatedAt] | max' <<<"$assets")"
           age=$(( ( $(date -u +%s) - $(date -u -d "$newest" +%s) ) / 60 ))
           echo "Newest asset is ${age} minutes old (settle time ${SETTLE_MINUTES})."
           if [[ "$age" -lt "$SETTLE_MINUTES" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Assets are still arriving."
+            echo "Giving the last upload a moment to finish."
             exit 0
           fi
 
