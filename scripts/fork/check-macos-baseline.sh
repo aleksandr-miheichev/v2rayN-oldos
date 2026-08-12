@@ -30,9 +30,11 @@ command -v otool >/dev/null 2>&1 || {
 max_version() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1; }
 
 scanned=0
+measured=0
 worst="0.0"
 worst_file=""
 offenders=()
+silent=()
 
 while IFS= read -r -d '' f; do
     file -b -- "$f" | grep -q 'Mach-O' || continue
@@ -40,8 +42,11 @@ while IFS= read -r -d '' f; do
 
     # Universal binaries report one load command block per architecture, so
     # every value is collected and the highest one wins.
+    found_for_file=0
     while read -r declared; do
         [[ -n "$declared" ]] || continue
+        found_for_file=1
+        measured=$((measured + 1))
         if [[ "$(max_version "$worst" "$declared")" == "$declared" && "$declared" != "$worst" ]]; then
             worst="$declared"
             worst_file="$f"
@@ -49,17 +54,37 @@ while IFS= read -r -d '' f; do
         if [[ "$(max_version "$MAX" "$declared")" == "$declared" && "$declared" != "$MAX" ]]; then
             offenders+=("macOS ${declared}  ${f#"$ROOT"/}")
         fi
-    done < <(otool -l -- "$f" 2>/dev/null | awk '
+    # No "--" here: BSD otool does not understand it as an end-of-options
+    # marker and fails, which silently emptied this whole check once.
+    done < <(otool -l "$f" 2>/dev/null | awk '
         $1 == "cmd" && ($2 == "LC_BUILD_VERSION" || $2 == "LC_VERSION_MIN_MACOSX") { want = 1; next }
         want && ($1 == "minos" || $1 == "version") { print $2; want = 0 }
     ')
+
+    ((found_for_file)) || silent+=("${f#"$ROOT"/}")
 done < <(find "$ROOT" -type f -print0)
 
-echo "Scanned ${scanned} Mach-O files under ${ROOT}"
+echo "Scanned ${scanned} Mach-O files under ${ROOT}, read ${measured} deployment targets"
 echo "Oldest macOS this fork promises: ${MAX}"
 echo "Highest minimum found:           ${worst}${worst_file:+  (${worst_file#"$ROOT"/})}"
 
 status=0
+
+# A check that measures nothing passes everything. That is worse than having no
+# check at all, and it is exactly what happened when otool was invoked with an
+# argument it did not understand.
+if ((scanned > 0 && measured == 0)); then
+    echo
+    echo "FAIL: not a single deployment target could be read, so nothing was actually verified."
+    echo "Check that otool works here; do not treat this as a pass."
+    status=1
+fi
+
+if ((${#silent[@]})); then
+    echo
+    echo "Note: ${#silent[@]} binaries declare no deployment target (normal for some object kinds):"
+    printf '  %s\n' "${silent[@]:0:5}"
+fi
 if ((${#offenders[@]})); then
     status=1
     echo
