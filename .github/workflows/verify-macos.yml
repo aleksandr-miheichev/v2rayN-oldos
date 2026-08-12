@@ -102,16 +102,34 @@ jobs:
       - name: Start the application
         run: |
           set -uo pipefail
+          exe='v2rayN.app/Contents/MacOS/v2rayN'
+          # Guard against the whole step degrading into a warning because a tool
+          # was missing: that is what hid this check the first time, when it
+          # called GNU timeout, which macOS does not ship.
+          [[ -x "$exe" ]] || { echo "::error::${exe} is missing or not executable"; exit 1; }
+
+          "./$exe" >/tmp/v2rayn.log 2>&1 &
+          pid=$!
+          sleep 30
+          alive=0
+          if kill -0 "$pid" 2>/dev/null; then
+            alive=1
+            kill -TERM "$pid" 2>/dev/null || true
+          fi
           rc=0
-          timeout 40 ./v2rayN.app/Contents/MacOS/v2rayN >/tmp/v2rayn.log 2>&1 || rc=$?
-          echo "exit code: ${rc}"
+          wait "$pid" 2>/dev/null || rc=$?
+
+          echo "still running after 30s: ${alive}, exit code: ${rc}"
           echo '--- application output ---'; tail -n 60 /tmp/v2rayn.log || true
+
           # Only loader failures are fatal. A build agent has no user session,
           # so an interface that cannot open a window proves nothing either way.
           if grep -qE 'dyld|Library not loaded|Symbol not found|Incompatible library version|image not found' /tmp/v2rayn.log; then
             echo "::error::the dynamic linker rejected the application on $(sw_vers -productVersion)"
             exit 1
           fi
-          if [[ "$rc" -ne 124 && "$rc" -ne 0 ]]; then
-            echo "::warning::the application exited with ${rc}; no loader error, so this is treated as a headless-session limitation"
+          if [[ "$alive" -eq 1 ]]; then
+            echo "The application was still running after 30 seconds on $(sw_vers -productVersion)."
+          else
+            echo "::warning::the application exited with ${rc} without a loader error; treated as a headless-session limitation"
           fi
