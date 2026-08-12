@@ -124,6 +124,11 @@ def diff_mapping(old: dict, new: dict) -> tuple[list, list, list]:
 
 
 def render(old: dict, new: dict) -> str:
+    # Nothing to compare against on the first release: listing every dependency
+    # and binary as "added" is noise, not information.
+    if not old:
+        return ""
+
     lines: list[str] = []
 
     for label, key in (("SDK", "dotnet_sdk"),):
