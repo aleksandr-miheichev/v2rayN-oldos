@@ -5,8 +5,9 @@
 # uploads to go quiet was an indirect one and stalled whenever any job was
 # re-run.
 #
-# Signature files are not listed: each artifact is uploaded together with its
-# .sig by the same step, so checking the artifact covers both.
+# Signature files are not listed, but they are still required: the artifact
+# and its .sig are uploaded by two different steps, so finalize-release.yml
+# demands <name>.sig for every entry here except manifest.json and the key.
 #
 # LoongArch and riscv64 are deliberately absent -- this fork does not build them.
 

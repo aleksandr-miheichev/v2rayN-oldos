@@ -28,7 +28,6 @@ on:
       - release all platforms
       - auto release
       - finalize release
-      - verify compatibility with older systems
     types: [ completed ]
   schedule:
     - cron: '23,53 * * * *'
@@ -154,9 +153,10 @@ jobs:
               printf '\n## What this means\n\n'
               printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
               printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
-              printf 'If the cause was transient, re-run the pipeline for the existing tag:\n\n'
-              printf '```bash\ngh workflow run build-linux.yml --repo %s --ref %s --field release_tag=<tag>\n```\n\n' \
-                "$GH_REPO" "$branch"
+              printf 'If the cause was transient, re-run the pipeline for the existing tag. '
+              printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
+              printf '```bash\ngh workflow run build-linux.yml --repo %s --ref refs/tags/<tag> --field release_tag=<tag>\n```\n\n' \
+                "$GH_REPO"
               printf 'Close this issue once the release completes.\n'
             } >> "$body_file"
 
