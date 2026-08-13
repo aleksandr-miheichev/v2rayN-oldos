@@ -77,6 +77,15 @@ jobs:
           fi
           echo "Candidate: $tag"
 
+          # The list above can come from a stale replica right after an edit
+          # elsewhere; issue #4 was this run picking a release that a direct
+          # read no longer agreed about. Trust only the release itself.
+          if [[ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "A direct read says this is not a waiting prerelease after all."
+            exit 0
+          fi
+
           assets="$(gh release view "$tag" --json assets --jq '.assets')"
 
           # Completeness is judged by the artifacts themselves. Waiting for
@@ -110,10 +119,26 @@ jobs:
 
           previous="$(gh release list --limit 50 --json tagName,isPrerelease \
             --jq "[.[] | select(.isPrerelease | not) | .tagName][0]" || true)"
+          # Guard against the same staleness in the other direction: comparing
+          # a release against itself would report an empty drift.
+          if [[ "$previous" == "$tag" || "$previous" == "null" ]]; then previous=""; fi
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+
+      # Promotion is the essential action and runs first; the drift section is
+      # decoration on an already-published release. The old order let a flaky
+      # manifest download (issue #4: a stale replica answered "release not
+      # found" for a release that existed) block the publication itself.
+      - name: Promote the prerelease
+        if: steps.pick.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit '${{ steps.pick.outputs.tag }}' --prerelease=false --latest
+          echo "Released ${{ steps.pick.outputs.tag }}."
 
       - name: Report the changes that produced no commit
         if: steps.pick.outputs.ready == 'true'
@@ -121,8 +146,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Once promoted, the release is never picked again, so this step gets
+          # no second chance -- but a missing decoration must not mark the
+          # publication as failed. Fetch trouble downgrades to a warning.
           mkdir -p drift
-          gh release download '${{ steps.pick.outputs.tag }}' --pattern manifest.json --dir drift/new --clobber
+          if ! gh release download '${{ steps.pick.outputs.tag }}' --pattern manifest.json --dir drift/new --clobber; then
+            echo "::warning::could not fetch this release's manifest; the drift section is skipped"
+            exit 0
+          fi
 
           previous='${{ steps.pick.outputs.previous }}'
           if [[ -n "$previous" ]]; then
@@ -141,12 +172,3 @@ jobs:
           else
             echo "Nothing changed outside the commit history."
           fi
-
-      - name: Promote the prerelease
-        if: steps.pick.outputs.ready == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh release edit '${{ steps.pick.outputs.tag }}' --prerelease=false --latest
-          echo "Released ${{ steps.pick.outputs.tag }}."
