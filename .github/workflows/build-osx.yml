@@ -56,7 +56,12 @@ jobs:
         path: v2rayN-macos-${{ env.Arch }}
     
     - name: Setup create-dmg
-      run: brew install create-dmg
+      run: |
+        # The runner image ships a third-party tap that Homebrew now distrusts
+        # and warns about on every command; drop it so the warning stops
+        # landing in the release annotations.
+        brew untap aws/tap 2>/dev/null || true
+        brew install create-dmg
 
     - name: Ensure script permissions
       run: chmod 755 package-osx.sh
