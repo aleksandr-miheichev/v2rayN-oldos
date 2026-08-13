@@ -16,17 +16,24 @@ name: verify macOS compatibility
 #      to find a window server on a build agent says nothing about whether
 #      the application is compatible with the operating system.
 #
-# x64 is verified on macos-13 and arm64 on macos-14, because those are the
-# oldest free runners GitHub offers for each architecture.
+# Both packages are verified on macos-14, the oldest free runner that is still
+# actually scheduled: a macos-13 job once waited out the full 24-hour queue
+# limit without a runner ever picking it up, which also kept the whole run
+# "in progress" for a day and silenced the failure reporter. The x64 package
+# runs through Rosetta 2, which still exercises the real x64 slices of every
+# binary against this OS.
 
 on:
   workflow_call:
     inputs:
       min_macos:
-        description: The oldest macOS release this fork promises to run on.
+        description: >-
+          The oldest macOS release this fork promises to run on. Matches the
+          LSMinimumSystemVersion that package-osx.sh writes into Info.plist,
+          because that is the value LaunchServices actually enforces.
         required: false
         type: string
-        default: '14.0'
+        default: '13.6'
 
 permissions:
   contents: read
@@ -39,9 +46,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x64, runner: macos-13 }
-          - { arch: arm64, runner: macos-14 }
+          - { arch: x64, runner: macos-14, exec_prefix: "arch -x86_64" }
+          - { arch: arm64, runner: macos-14, exec_prefix: "" }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -49,6 +57,14 @@ jobs:
 
       - name: Report the machine this runs on
         run: sw_vers && uname -m
+
+      - name: Make sure Rosetta 2 is present
+        if: matrix.arch == 'x64'
+        run: |
+          # The image normally carries it already; install only when it is gone.
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
 
       - name: Download the built disk image
         uses: actions/download-artifact@v8
@@ -79,14 +95,16 @@ jobs:
       - name: Check the deployment target of every shipped binary
         run: |
           chmod 755 scripts/fork/check-macos-baseline.sh
-          ./scripts/fork/check-macos-baseline.sh v2rayN.app '${{ inputs.min_macos }}'
+          # Helper cores under bin/ are separate processes: their declared floor
+          # is reported, but whether they run is judged by executing them below.
+          ./scripts/fork/check-macos-baseline.sh v2rayN.app '${{ inputs.min_macos }}' 'Contents/MacOS/bin/'
 
       - name: Load the native SQLite library on this machine
         run: |
           set -euo pipefail
           dylib="$(find v2rayN.app -name 'libe_sqlite3.dylib' -print -quit)"
           [[ -n "$dylib" ]] || { echo "::error::libe_sqlite3.dylib is missing from the bundle"; exit 1; }
-          python3 - "$dylib" <<'PY'
+          ${{ matrix.exec_prefix }} python3 - "$dylib" <<'PY'
           import ctypes, sys
 
           path = sys.argv[1]
@@ -98,6 +116,35 @@ jobs:
           if not version:
               raise SystemExit("the library loaded but reported no version")
           PY
+
+      - name: Run every bundled core on this macOS
+        run: |
+          set -uo pipefail
+          # The cores are separate processes rather than libraries loaded into
+          # ours, so their Mach-O metadata cannot answer whether they start:
+          # sing-box declares macOS 26.0 as its floor, yet not a single user
+          # report shows it refusing to run anywhere. Executing each one here
+          # is the direct evidence, on exactly the macOS this job runs.
+          failed=0
+          try_core() {
+            local bin="$1"; shift
+            if [[ ! -f "$bin" ]]; then
+              echo "absent  ${bin#v2rayN.app/Contents/MacOS/}"
+              return 0
+            fi
+            chmod +x "$bin"
+            local out
+            if out="$(${{ matrix.exec_prefix }} "$bin" "$@" 2>&1)"; then
+              echo "runs    ${bin#v2rayN.app/Contents/MacOS/}: ${out%%$'\n'*}"
+            else
+              echo "::error::${bin#v2rayN.app/Contents/MacOS/} cannot run on macOS $(sw_vers -productVersion): ${out%%$'\n'*}"
+              failed=1
+            fi
+          }
+          try_core v2rayN.app/Contents/MacOS/bin/xray/xray version
+          try_core v2rayN.app/Contents/MacOS/bin/sing_box/sing-box version
+          try_core v2rayN.app/Contents/MacOS/bin/mihomo/mihomo -v
+          exit "$failed"
 
       - name: Start the application
         run: |
@@ -115,6 +162,10 @@ jobs:
           if kill -0 "$pid" 2>/dev/null; then
             alive=1
             kill -TERM "$pid" 2>/dev/null || true
+            sleep 5
+            # An app that ignores TERM would keep the wait below hanging until
+            # the job timeout; escalate rather than trust it to be polite.
+            kill -KILL "$pid" 2>/dev/null || true
           fi
           rc=0
           wait "$pid" 2>/dev/null || rc=$?
