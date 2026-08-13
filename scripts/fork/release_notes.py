@@ -47,9 +47,28 @@ def run(args: list[str]) -> str:
     return result.stdout
 
 
-def collect(rev_range: str) -> list[str]:
-    out = run(["git", "log", "--no-merges", "--pretty=format:%s", rev_range])
-    return [line.strip() for line in out.splitlines() if line.strip()]
+def collect(since: str, until: str) -> list[tuple[str, str]]:
+    """(sha, subject) pairs of what is new on the release side.
+
+    The symmetric range with --cherry-pick matters: the hourly sync rebases the
+    fork's patch stack, which rewrites every one of its SHAs, and a plain
+    A..B range would then relist the entire stack as "new" in the next
+    release. Patch-id comparison drops those rebased duplicates.
+    """
+    out = run(["git", "log", "--no-merges", "--right-only", "--cherry-pick",
+               "--pretty=format:%H\t%s", f"{since}...{until}"])
+    pairs = []
+    for line in out.splitlines():
+        if "\t" in line:
+            sha, subject = line.split("\t", 1)
+            if subject.strip():
+                pairs.append((sha, subject.strip()))
+    return pairs
+
+
+def fork_commit_set(upstream_ref: str, until: str) -> set[str]:
+    out = run(["git", "rev-list", f"{upstream_ref}..{until}"])
+    return set(out.split())
 
 
 def classify(subject: str) -> str:
@@ -74,12 +93,25 @@ def upper_first(subject: str) -> str:
     return subject[:1].upper() + subject[1:]
 
 
-def render(subjects: list[str], upstream: str) -> str:
+def render(pairs: list[tuple[str, str]], upstream: str, fork_set: set[str] | None) -> str:
+    """Upstream changes grouped by topic; fork maintenance folded away.
+
+    The reader of a release page wants to know what changed in the
+    application. The fork's own CI and packaging commits are not that, so they
+    go into a collapsed block at the end instead of being interleaved --
+    but they are not hidden entirely, because they do change the artifacts.
+    """
     buckets: dict[str, list[str]] = {}
-    for subject in subjects:
+    fork_lines: list[str] = []
+    for sha, subject in pairs:
         if SKIP.match(subject):
             continue
-        buckets.setdefault(classify(subject), []).append(linkify(subject, upstream))
+        if fork_set is not None and sha in fork_set:
+            # No linkify: a (#N) here would be this fork's number, and linking
+            # it into the upstream repository points at a stranger's PR.
+            fork_lines.append(upper_first(subject))
+        else:
+            buckets.setdefault(classify(subject), []).append(linkify(subject, upstream))
 
     order = []
     for _, group in GROUPS:
@@ -93,6 +125,16 @@ def render(subjects: list[str], upstream: str) -> str:
         for subject in buckets[group]:
             lines.append(f"- {upper_first(subject)}")
         lines.append("")
+
+    if fork_lines:
+        lines.append("<details>")
+        lines.append(f"<summary>Fork maintenance ({len(fork_lines)} commits)</summary>")
+        lines.append("")
+        for subject in fork_lines:
+            lines.append(f"- {subject}")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n" if lines else ""
 
 
@@ -104,11 +146,15 @@ def main() -> int:
     parser.add_argument("--from", dest="since", required=True, help="previous release tag or commit")
     parser.add_argument("--to", dest="until", default="HEAD")
     parser.add_argument("--upstream", default=UPSTREAM)
+    parser.add_argument("--upstream-ref",
+                        help="ref of upstream's master; commits not reachable from it "
+                             "are the fork's own and are folded into a maintenance block")
     parser.add_argument("--output")
     args = parser.parse_args()
 
-    subjects = collect(f"{args.since}..{args.until}")
-    body = render(subjects, args.upstream)
+    pairs = collect(args.since, args.until)
+    fork_set = fork_commit_set(args.upstream_ref, args.until) if args.upstream_ref else None
+    body = render(pairs, args.upstream, fork_set)
     if not body:
         body = "No source changes since the previous release.\n"
 
