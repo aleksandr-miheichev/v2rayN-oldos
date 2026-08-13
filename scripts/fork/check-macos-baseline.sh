@@ -13,13 +13,19 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 <directory> [max-min-macos]" >&2
+    echo "usage: $0 <directory> [max-min-macos] [helper-prefix]" >&2
     exit 2
 }
 
 ROOT="${1:-}"
 [[ -n "$ROOT" && -d "$ROOT" ]] || usage
-MAX="${2:-14.0}"
+MAX="${2:-13.6}"
+# Binaries under this relative prefix are helper processes (bundled cores),
+# not code loaded into our process. Their declared floor is reported but not
+# fatal: Go binaries routinely declare a far newer minimum than they need,
+# and whether they actually start is proven by executing them, which the
+# workflow does in a separate step.
+HELPERS="${3:-}"
 
 command -v otool >/dev/null 2>&1 || {
     echo "otool is required (install the Xcode command line tools)" >&2
@@ -34,6 +40,7 @@ measured=0
 worst="0.0"
 worst_file=""
 offenders=()
+helper_offenders=()
 silent=()
 
 while IFS= read -r -d '' f; do
@@ -52,7 +59,12 @@ while IFS= read -r -d '' f; do
             worst_file="$f"
         fi
         if [[ "$(max_version "$MAX" "$declared")" == "$declared" && "$declared" != "$MAX" ]]; then
-            offenders+=("macOS ${declared}  ${f#"$ROOT"/}")
+            rel="${f#"$ROOT"/}"
+            if [[ -n "$HELPERS" && "$rel" == "$HELPERS"* ]]; then
+                helper_offenders+=("macOS ${declared}  ${rel}")
+            else
+                offenders+=("macOS ${declared}  ${rel}")
+            fi
         fi
     # No "--" here: BSD otool does not understand it as an end-of-options
     # marker and fails, which silently emptied this whole check once.
@@ -84,6 +96,12 @@ if ((${#silent[@]})); then
     echo
     echo "Note: ${#silent[@]} binaries declare no deployment target (normal for some object kinds):"
     printf '  %s\n' "${silent[@]:0:5}"
+fi
+if ((${#helper_offenders[@]})); then
+    echo
+    echo "WARNING: helper processes declaring a newer floor than macOS ${MAX}:"
+    printf '  %s\n' "${helper_offenders[@]}"
+    echo "Not fatal by itself; the workflow proves whether they start by running them."
 fi
 if ((${#offenders[@]})); then
     status=1
