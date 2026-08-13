@@ -61,7 +61,9 @@ jobs:
           count="$(git rev-list --count "${PRODUCT_BRANCH}..upstream/master" 2>/dev/null || echo 0)"
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "New upstream commits: $count"
-          [[ "$count" == "0" ]] || git log --oneline "${PRODUCT_BRANCH}..upstream/master" | head -30
+          # --max-count instead of piping to head: under pipefail, head closing
+          # the pipe early would turn a large backlog into a SIGPIPE failure.
+          [[ "$count" == "0" ]] || git log --oneline --max-count=30 "${PRODUCT_BRANCH}..upstream/master"
 
       - name: Update the mirror branch
         if: steps.incoming.outputs.count != '0'
@@ -118,6 +120,33 @@ jobs:
             '' \
             'Upstream commits waiting to be integrated:' \
             '' )"
-          body="${body}$(git log --oneline "${PRODUCT_BRANCH}..upstream/master" | head -30)"
+          body="${body}$(git log --oneline --max-count=30 "${PRODUCT_BRANCH}..upstream/master")"
           gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
           exit 1
+
+      # A conflict has its own rich issue above; everything else -- a failed
+      # fetch, a refused force-with-lease, a dead runner tool -- used to be a
+      # red run nobody watches, while oldos silently froze and releases kept
+      # shipping ever-older code. The failure sweep deliberately skips this
+      # workflow, so it must speak for itself.
+      - name: Report any other failure of this sync
+        if: failure() && steps.rebase.outputs.conflict != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing="$(gh issue list --state open --label sync-failure --json number --jq '.[0].number' || true)"
+          if [[ -n "$existing" && "$existing" != "null" ]]; then
+            echo "Issue #$existing is already open for a failing sync."
+            exit 0
+          fi
+          gh label create sync-failure --color D93F0B \
+            --description "The hourly upstream sync is failing for a reason other than a rebase conflict" 2>/dev/null || true
+          gh issue create --title "Upstream sync failed (run ${{ github.run_id }})" --label sync-failure --body "$(printf '%s\n' \
+            'The hourly sync with upstream failed before reaching a rebase conflict.' \
+            '' \
+            'While this stays broken, `oldos` no longer receives upstream commits and releases keep shipping progressively older code -- with every other pipeline green.' \
+            '' \
+            'Log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            '' \
+            'Close this issue once a sync run succeeds.')"
