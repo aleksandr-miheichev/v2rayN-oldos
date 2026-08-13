@@ -22,7 +22,9 @@ jobs:
 
   release-zip:
     if: inputs.release_tag != ''
-    needs: build
+    # Same gate as the dmg: the zip carries the same application, and opt-in
+    # prerelease users auto-update from it before the release is promoted.
+    needs: [ build, verify ]
     uses: ./.github/workflows/package-zip.yml
     with:
       target: macos
