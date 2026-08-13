@@ -104,7 +104,10 @@ jobs:
           set -euo pipefail
           dylib="$(find v2rayN.app -name 'libe_sqlite3.dylib' -print -quit)"
           [[ -n "$dylib" ]] || { echo "::error::libe_sqlite3.dylib is missing from the bundle"; exit 1; }
-          ${{ matrix.exec_prefix }} python3 - "$dylib" <<'PY'
+          # The system python at /usr/bin is a universal binary; the toolchain
+          # python that shadows it in PATH is arm64-only, and Rosetta answers
+          # "Bad CPU type in executable" when asked to run it as x86_64.
+          ${{ matrix.exec_prefix }} /usr/bin/python3 - "$dylib" <<'PY'
           import ctypes, sys
 
           path = sys.argv[1]
