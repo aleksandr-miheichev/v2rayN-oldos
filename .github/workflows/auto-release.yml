@@ -118,9 +118,19 @@ jobs:
         if: steps.decide.outputs.release == 'true'
         run: |
           set -euo pipefail
+          # The upstream base serves two purposes: release_notes.py separates
+          # upstream changes from fork maintenance with it, and the provenance
+          # link below points at it -- linking the fork's own HEAD into the
+          # upstream repository produced dead links, because that commit only
+          # exists here.
+          git remote add upstream https://github.com/2dust/v2rayN.git 2>/dev/null || true
+          git fetch -q --no-tags upstream master
+          base_commit="$(git merge-base HEAD upstream/master)"
+
           previous='${{ steps.decide.outputs.previous }}'
           if [[ -n "$previous" ]]; then
-            python3 scripts/fork/release_notes.py --from "$previous" --to HEAD --output notes-body.md
+            python3 scripts/fork/release_notes.py --from "$previous" --to HEAD \
+              --upstream-ref upstream/master --output notes-body.md
           else
             echo "First release of this fork." > notes-body.md
           fi
@@ -130,12 +140,14 @@ jobs:
             printf '\n'
             printf -- '---\n\n'
             printf '### About this build\n\n'
-            printf 'This is an automated build of [2dust/v2rayN](https://github.com/2dust/v2rayN) '
-            printf 'at commit [`%s`](https://github.com/2dust/v2rayN/commit/%s), ' "$(git rev-parse --short HEAD)" "$(git rev-parse HEAD)"
-            printf 'unchanged except for keeping support for operating systems upstream no longer targets.\n\n'
-            printf '**Supported systems:** Ubuntu 22.04 and newer, Debian 12 and newer, RHEL 9 and newer, macOS 14 and newer, Windows on x64 and arm64.\n\n'
+            printf 'This is upstream [2dust/v2rayN](https://github.com/2dust/v2rayN) '
+            printf 'at commit [`%s`](https://github.com/2dust/v2rayN/commit/%s), ' "$(git rev-parse --short "$base_commit")" "$base_commit"
+            printf 'unchanged except for the compatibility patches of this fork '
+            printf '([what differs](https://github.com/${{ github.repository }}/compare/%s...${{ steps.decide.outputs.tag }})).\n\n' "$base_commit"
+            printf '**Supported systems:** Ubuntu 22.04 and newer, Debian 12 and newer, RHEL 9 and newer, macOS 13.6 and newer, Windows on x64, x86 and arm64.\n\n'
             printf 'Every release is blocked unless the packages install and the application starts on Ubuntu 22.04, Debian 12 and Rocky Linux 9, '
-            printf 'and unless no shipped binary requires a glibc newer than 2.34.\n\n'
+            printf 'no shipped binary requires a glibc newer than 2.34, '
+            printf 'and the macOS application launches with its native libraries loading on macOS 14 and 15.\n\n'
             printf 'Verify a download with the `.sig` file next to it and `v2rayN-public-key.asc` from this release.\n'
           } > notes.md
 
@@ -163,6 +175,11 @@ jobs:
           # workflow_dispatch is one of the two events that still start a run
           # when triggered with the default token, which is why no personal
           # access token is needed anywhere in this repository.
+          #
+          # The builds run at the TAG, not the branch: the branch is rebased
+          # hourly, so by the time a platform is re-run it can point at code
+          # the release never claimed to contain -- the assets of one release
+          # were once built from two different commits this way.
           gh workflow run build-all.yml \
-            --ref "${PRODUCT_BRANCH}" \
+            --ref "refs/tags/${{ steps.decide.outputs.tag }}" \
             -f release_tag='${{ steps.decide.outputs.tag }}'
