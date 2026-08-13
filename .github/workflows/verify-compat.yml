@@ -148,7 +148,7 @@ jobs:
             # bare "undefined symbol: cos" says nothing about whether it works.
             # A missing GLIBC version is different: that is precisely how the
             # upstream builds failed on these systems.
-            if grep -qE 'GLIBC_[0-9A-Z_.]+.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
+            if grep -qE '(GLIBC(XX)?_|CXXABI_)[0-9A-Z_.]*.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
               fail=1
               echo "::error::the loader on this system cannot satisfy ${lib}"
               grep -E 'not found' <<<"$out" | head -20
@@ -177,7 +177,7 @@ jobs:
           echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
 
           # The failure this fork exists to prevent. Always fatal.
-          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+          if grep -qiE 'GLIBC_|GLIBCXX_|CXXABI_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
             echo "::error::${SYSTEM} cannot load the shipped native libraries"
             exit 1
           fi
@@ -243,7 +243,7 @@ jobs:
             # bare "undefined symbol: cos" says nothing about whether it works.
             # A missing GLIBC version is different: that is precisely how the
             # upstream builds failed on these systems.
-            if grep -qE 'GLIBC_[0-9A-Z_.]+.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
+            if grep -qE '(GLIBC(XX)?_|CXXABI_)[0-9A-Z_.]*.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
               fail=1
               echo "::error::the loader on this system cannot satisfy ${lib}"
               grep -E 'not found' <<<"$out" | head -20
@@ -268,7 +268,7 @@ jobs:
           echo "exit code: ${rc}"
           echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
 
-          if grep -qiE 'GLIBC_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+          if grep -qiE 'GLIBC_|GLIBCXX_|CXXABI_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
             echo "::error::${SYSTEM} cannot load the shipped native libraries"
             exit 1
           fi
