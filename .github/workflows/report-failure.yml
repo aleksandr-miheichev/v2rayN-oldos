@@ -72,9 +72,16 @@ jobs:
           # not the self-reporting sync workflow. Filtering happens in awk
           # rather than inside --jq, because the shell would have to escape
           # nested quotes and jq's join() refuses an array of numbers anyway.
+          #
+          # The window is keyed to the run's completion (updatedAt), not its
+          # creation: a macOS run once sat queued for the full 24-hour limit,
+          # was "in progress" through every sweep, and by the time it finally
+          # failed its creation date had left the window. Completion events for
+          # token-dispatched runs are also never delivered (GitHub recursion
+          # prevention), so this sweep was its only chance -- and missed.
           since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-          runs="$(gh run list --limit 80 --json databaseId,conclusion,createdAt,name \
-            --jq '.[] | [.databaseId, .conclusion, .createdAt, .name] | @tsv' \
+          runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name \
+            --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name] | @tsv' \
             | awk -v since="$since" -F'\t' '
                 $2 == "failure" && $3 > since &&
                 $4 != "sync with upstream" && $4 != "report a failed release" { printf "%s ", $1 }')"
