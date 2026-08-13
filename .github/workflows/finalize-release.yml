@@ -97,6 +97,14 @@ jobs:
             [[ -n "$want" && "$want" != \#* ]] || continue
             jq -e --arg n "$want" 'any(.[]; .name == $n)' <<<"$assets" >/dev/null 2>&1 \
               || missing+=("$want")
+            # The signature is uploaded by a separate step from the artifact,
+            # so the artifact's presence does not imply the signature's -- and
+            # promoting an unsigned release breaks its whole verification story.
+            case "$want" in
+              manifest.json|v2rayN-public-key.asc) ;;
+              *) jq -e --arg n "${want}.sig" 'any(.[]; .name == $n)' <<<"$assets" >/dev/null 2>&1 \
+                   || missing+=("${want}.sig") ;;
+            esac
           done < scripts/fork/expected-release-assets.txt
 
           if ((${#missing[@]})); then
