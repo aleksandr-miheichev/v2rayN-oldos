@@ -46,7 +46,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x64, runner: macos-14, exec_prefix: "arch -x86_64" }
+          # x64 runs on macos-15 because only Sequoia's Rosetta translates the
+          # AVX2 family that GOAMD64=v3 cores (mihomo) require; arm64 stays on
+          # macos-14 as the oldest runner that is still actually scheduled.
+          - { arch: x64, runner: macos-15, exec_prefix: "arch -x86_64" }
           - { arch: arm64, runner: macos-14, exec_prefix: "" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -139,6 +142,12 @@ jobs:
             local out
             if out="$(${{ matrix.exec_prefix }} "$bin" "$@" 2>&1)"; then
               echo "runs    ${bin#v2rayN.app/Contents/MacOS/}: ${out%%$'\n'*}"
+            elif [[ -n "${{ matrix.exec_prefix }}" && "$out" == *"AMD64 processors with v3"* ]]; then
+              # The binary started -- exec and dyld are past -- and tripped its
+              # own CPUID check against Rosetta's emulated CPU. Every real Intel
+              # Mac able to run macOS 13.6 has the v3 feature set, so this says
+              # nothing about OS compatibility.
+              echo "::warning::${bin#v2rayN.app/Contents/MacOS/} started, then refused Rosetta's CPU profile: ${out%%$'\n'*}"
             else
               echo "::error::${bin#v2rayN.app/Contents/MacOS/} cannot run on macOS $(sw_vers -productVersion): ${out%%$'\n'*}"
               failed=1
