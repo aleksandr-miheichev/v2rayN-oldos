@@ -92,37 +92,55 @@ jobs:
           # uploads to go quiet was an indirect signal and stalled forever
           # whenever any job was re-run. manifest.json is in the list, so its
           # presence still proves the compatibility gate passed.
-          missing=()
-          while IFS= read -r want; do
-            [[ -n "$want" && "$want" != \#* ]] || continue
-            jq -e --arg n "$want" 'any(.[]; .name == $n)' <<<"$assets" >/dev/null 2>&1 \
-              || missing+=("$want")
-            # The signature is uploaded by a separate step from the artifact,
-            # so the artifact's presence does not imply the signature's -- and
-            # promoting an unsigned release breaks its whole verification story.
-            case "$want" in
-              manifest.json|v2rayN-public-key.asc) ;;
-              *) jq -e --arg n "${want}.sig" 'any(.[]; .name == $n)' <<<"$assets" >/dev/null 2>&1 \
-                   || missing+=("${want}.sig") ;;
-            esac
-          done < scripts/fork/expected-release-assets.txt
+          # The signature checks exist because the artifact and its .sig are
+          # uploaded by two different steps, so one's presence does not imply
+          # the other's -- and promoting an unsigned release breaks its whole
+          # verification story.
+          list_missing() {
+            local assets_json="$1"
+            local out=()
+            while IFS= read -r want; do
+              [[ -n "$want" && "$want" != \#* ]] || continue
+              jq -e --arg n "$want" 'any(.[]; .name == $n)' <<<"$assets_json" >/dev/null 2>&1 \
+                || out+=("$want")
+              case "$want" in
+                manifest.json|v2rayN-public-key.asc) ;;
+                *) jq -e --arg n "${want}.sig" 'any(.[]; .name == $n)' <<<"$assets_json" >/dev/null 2>&1 \
+                     || out+=("${want}.sig") ;;
+              esac
+            done < scripts/fork/expected-release-assets.txt
+            printf '%s\n' "${out[@]:-}"
+          }
 
-          if ((${#missing[@]})); then
+          missing="$(list_missing "$assets")"
+          if [[ -n "$missing" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Not complete yet, ${#missing[@]} artifacts are absent:"
-            printf '  %s\n' "${missing[@]}"
+            echo "Not complete yet, these artifacts are absent:"
+            echo "$missing" | sed 's/^/  /'
             exit 0
           fi
           echo "Every expected artifact is present."
 
           # A short pause only to avoid racing the upload of the final file.
+          # Waited out HERE rather than deferred: punting to the next cron
+          # tick once left a complete release sitting as a prerelease for
+          # half an hour, because cron was this workflow's only reliable
+          # trigger and GitHub delays frequent schedules.
           newest="$(jq -r '[.[].updatedAt] | max' <<<"$assets")"
           age=$(( ( $(date -u +%s) - $(date -u -d "$newest" +%s) ) / 60 ))
           echo "Newest asset is ${age} minutes old (settle time ${SETTLE_MINUTES})."
           if [[ "$age" -lt "$SETTLE_MINUTES" ]]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Giving the last upload a moment to finish."
-            exit 0
+            wait_s=$(( (SETTLE_MINUTES - age) * 60 ))
+            echo "Waiting ${wait_s}s for the last upload to settle."
+            sleep "$wait_s"
+            assets="$(gh release view "$tag" --json assets --jq '.assets')"
+            missing="$(list_missing "$assets")"
+            if [[ -n "$missing" ]]; then
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              echo "An upload was still in flight; these went missing during the wait:"
+              echo "$missing" | sed 's/^/  /'
+              exit 0
+            fi
           fi
 
           previous="$(gh release list --limit 50 --json tagName,isPrerelease \

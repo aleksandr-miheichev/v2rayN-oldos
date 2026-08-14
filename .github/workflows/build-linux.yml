@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
   build:
@@ -176,3 +176,21 @@ jobs:
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm, file_pattern: "*.rpm" }
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
+
+  nudge-finalize:
+    name: ask the finalizer to look now
+    if: inputs.release_tag != ''
+    needs: [ release-zip, release-deb, release-rpm, publish-manifest ]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch finalize-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Completion events of token-dispatched runs are never delivered
+          # (recursion prevention), so promotion used to wait for a cron tick
+          # -- up to half an hour of a complete release sitting as a
+          # prerelease. workflow_dispatch is the one event the default token
+          # may create, so the build asks the finalizer to look right now.
+          gh workflow run finalize-release.yml --ref oldos
