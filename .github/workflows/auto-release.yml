@@ -34,6 +34,11 @@ concurrency:
 env:
   PRODUCT_BRANCH: oldos
   QUIET_MINUTES: '90'
+  # The notes step adds a git remote literally named "upstream" for the
+  # provenance merge-base, and gh resolves its target repository from the
+  # remotes, preferring exactly that name -- so without this pin,
+  # `gh release create` tried to publish into 2dust/v2rayN and got a 403.
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   release:
