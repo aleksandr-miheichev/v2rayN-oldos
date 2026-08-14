@@ -28,6 +28,10 @@ concurrency:
 env:
   UPSTREAM: https://github.com/2dust/v2rayN.git
   PRODUCT_BRANCH: oldos
+  # This checkout carries a remote named "upstream", which is the name gh
+  # prefers when resolving its target repository -- without this pin the
+  # issue-filing steps would address 2dust/v2rayN and fail with a 403.
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   sync:
