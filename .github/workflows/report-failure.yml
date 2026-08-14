@@ -1,4 +1,8 @@
-name: report a failed release
+# A green run of this workflow means "looked, nothing to report" -- it fires
+# on every watched completion and on a schedule, not only on failures. The
+# name says watchdog so a green line does not read as a failure having
+# happened.
+name: release watchdog
 # Part of this fork's release pipeline; the product branch is oldos.
 
 # A failed release is silent by default. The pipeline stops, the prerelease
@@ -83,7 +87,7 @@ jobs:
             --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name] | @tsv' \
             | awk -v since="$since" -F'\t' '
                 $2 == "failure" && $3 > since &&
-                $4 != "sync with upstream" && $4 != "report a failed release" { printf "%s ", $1 }')"
+                $4 != "sync with upstream" && $4 != "release watchdog" { printf "%s ", $1 }')"
           echo "runs=${runs}" >> "$GITHUB_OUTPUT"
           echo "Failed runs in the window: ${runs:-none}"
 
