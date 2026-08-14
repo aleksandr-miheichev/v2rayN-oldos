@@ -3,19 +3,27 @@ name: sync with upstream
 
 # Keeps this fork current with 2dust/v2rayN.
 #
-#   master  is a verbatim mirror of upstream and is never patched.
-#   oldos   is the product branch: the mirror plus this fork's patch stack,
-#           rebased on top of every upstream change.
+#   master   is a verbatim mirror of upstream and is never patched.
+#   patches  carries the fork's granular patch stack, rebased on top of every
+#            upstream change; development and conflict resolution happen here.
+#   oldos    is the product branch and is REBUILT, not committed to: it is
+#            always upstream/master plus exactly ONE squashed commit holding
+#            the whole patch tree.
 #
-# Rebasing rather than merging keeps the patch stack flat and readable, which
-# matters because it has to survive years of upstream churn. When a rebase
-# conflicts the run stops and opens an issue instead of pushing something
-# half-resolved or failing silently.
+# The one-commit shape is deliberate: rebasing a 20-commit stack hourly kept
+# republishing all of it with fresh timestamps, so the repository's commit
+# page showed a wall of fork maintenance above the author's actual work. Now
+# the public history reads as upstream's history plus a single line, and the
+# full per-change fork history stays on `patches`.
 
 on:
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
+  # A push to patches rebuilds oldos within a minute. The sync's own pushes
+  # use GITHUB_TOKEN, whose events start no workflows, so this cannot loop.
+  push:
+    branches: [ patches ]
 
 permissions:
   contents: write
@@ -27,6 +35,7 @@ concurrency:
 
 env:
   UPSTREAM: https://github.com/2dust/v2rayN.git
+  PATCH_BRANCH: patches
   PRODUCT_BRANCH: oldos
   # This checkout carries a remote named "upstream", which is the name gh
   # prefers when resolving its target repository -- without this pin the
@@ -35,13 +44,13 @@ env:
 
 jobs:
   sync:
-    name: rebase the patch stack onto upstream
+    name: rebase the patch stack and rebuild the product branch
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout the product branch
+      - name: Checkout the patch branch
         uses: actions/checkout@v7
         with:
-          ref: oldos
+          ref: patches
           fetch-depth: '0'
 
       - name: Configure git
@@ -62,12 +71,12 @@ jobs:
         id: incoming
         run: |
           set -euo pipefail
-          count="$(git rev-list --count "${PRODUCT_BRANCH}..upstream/master" 2>/dev/null || echo 0)"
+          count="$(git rev-list --count "${PATCH_BRANCH}..upstream/master" 2>/dev/null || echo 0)"
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "New upstream commits: $count"
           # --max-count instead of piping to head: under pipefail, head closing
           # the pipe early would turn a large backlog into a SIGPIPE failure.
-          [[ "$count" == "0" ]] || git log --oneline --max-count=30 "${PRODUCT_BRANCH}..upstream/master"
+          [[ "$count" == "0" ]] || git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
 
       - name: Update the mirror branch
         if: steps.incoming.outputs.count != '0'
@@ -77,10 +86,10 @@ jobs:
           git push --force-with-lease origin master
 
       - name: Rebase the patch stack
-        if: steps.incoming.outputs.count != '0'
         id: rebase
         run: |
           set -uo pipefail
+          # A no-op when upstream has not moved (the push-to-patches trigger).
           if git rebase upstream/master; then
             echo "conflict=false" >> "$GITHUB_OUTPUT"
           else
@@ -89,8 +98,41 @@ jobs:
           fi
 
       - name: Push the rebased patch stack
-        if: steps.rebase.outputs.conflict == 'false' && steps.incoming.outputs.count != '0'
-        run: git push --force-with-lease origin "${PRODUCT_BRANCH}"
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${PATCH_BRANCH}")" ]]; then
+            echo "The patch branch did not move."
+          else
+            git push --force-with-lease origin "HEAD:refs/heads/${PATCH_BRANCH}"
+          fi
+
+      - name: Rebuild the product branch as upstream plus one commit
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          # The rebased patch branch's tree IS the product tree, so the product
+          # commit is built directly with commit-tree: tree of patches, single
+          # parent at upstream's tip. No checkout, nothing to get half-done.
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          parent="$(git rev-parse upstream/master)"
+          current="$(git rev-parse "origin/${PRODUCT_BRANCH}" 2>/dev/null || echo '')"
+
+          # Idempotency guard: without it every run would mint a new commit
+          # (same content, fresh timestamp) and force-push it for nothing.
+          if [[ -n "$current" ]] \
+             && [[ "$(git rev-parse "${current}^{tree}")" == "$tree" ]] \
+             && [[ "$(git rev-parse "${current}^" 2>/dev/null || echo '')" == "$parent" ]]; then
+            echo "The product branch already equals upstream plus the patch tree."
+            exit 0
+          fi
+
+          count="$(git rev-list --count "upstream/master..HEAD")"
+          new="$(git commit-tree "$tree" -p "$parent" \
+            -m 'fork: keep Ubuntu 22.04, Debian 12, RHEL 9 and macOS 13.6 supported' \
+            -m "Squashed from the ${count} commits on branch ${PATCH_BRANCH}, where the full per-change history lives. This branch always reads as upstream master plus this one commit.")"
+          git push --force-with-lease origin "${new}:refs/heads/${PRODUCT_BRANCH}"
+          echo "Product branch rebuilt: ${new}"
 
       - name: Open an issue when the rebase conflicts
         if: steps.rebase.outputs.conflict == 'true'
@@ -110,27 +152,28 @@ jobs:
           body="$(printf '%s\n' \
             'The hourly sync could not rebase the patch stack onto the latest upstream `master`.' \
             '' \
-            'Releases are paused until this is resolved, because `oldos` no longer contains the newest upstream commits.' \
+            'Releases are paused until this is resolved, because `oldos` no longer receives the newest upstream commits.' \
             '' \
             'To resolve it locally:' \
             '' \
             '```bash' \
             'git fetch upstream master' \
-            'git checkout oldos' \
+            'git checkout patches' \
             'git rebase upstream/master' \
             '# resolve, then:' \
-            'git push --force-with-lease origin oldos' \
+            'git push --force-with-lease origin patches' \
+            '# the sync rebuilds oldos from patches by itself' \
             '```' \
             '' \
             'Upstream commits waiting to be integrated:' \
             '' )"
-          body="${body}$(git log --oneline --max-count=30 "${PRODUCT_BRANCH}..upstream/master")"
+          body="${body}$(git log --oneline --max-count=30 "HEAD..upstream/master")"
           gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
           exit 1
 
       # A conflict has its own rich issue above; everything else -- a failed
       # fetch, a refused force-with-lease, a dead runner tool -- used to be a
-      # red run nobody watches, while oldos silently froze and releases kept
+      # red run nobody watches, while the fork silently froze and releases kept
       # shipping ever-older code. The failure sweep deliberately skips this
       # workflow, so it must speak for itself.
       - name: Report any other failure of this sync
@@ -149,7 +192,7 @@ jobs:
           gh issue create --title "Upstream sync failed (run ${{ github.run_id }})" --label sync-failure --body "$(printf '%s\n' \
             'The hourly sync with upstream failed before reaching a rebase conflict.' \
             '' \
-            'While this stays broken, `oldos` no longer receives upstream commits and releases keep shipping progressively older code -- with every other pipeline green.' \
+            'While this stays broken, the fork no longer receives upstream commits and releases keep shipping progressively older code -- with every other pipeline green.' \
             '' \
             'Log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
             '' \
