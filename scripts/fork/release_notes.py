@@ -94,24 +94,20 @@ def upper_first(subject: str) -> str:
 
 
 def render(pairs: list[tuple[str, str]], upstream: str, fork_set: set[str] | None) -> str:
-    """Upstream changes grouped by topic; fork maintenance folded away.
+    """Upstream changes grouped by topic; the fork's own commits do not appear.
 
     The reader of a release page wants to know what changed in the
-    application. The fork's own CI and packaging commits are not that, so they
-    go into a collapsed block at the end instead of being interleaved --
-    but they are not hidden entirely, because they do change the artifacts.
+    application, which means upstream's commits. The fork's CI and packaging
+    commits are dropped outright: the "what differs" compare link in the
+    release boilerplate already discloses the fork's changes in full.
     """
     buckets: dict[str, list[str]] = {}
-    fork_lines: list[str] = []
     for sha, subject in pairs:
         if SKIP.match(subject):
             continue
         if fork_set is not None and sha in fork_set:
-            # No linkify: a (#N) here would be this fork's number, and linking
-            # it into the upstream repository points at a stranger's PR.
-            fork_lines.append(upper_first(subject))
-        else:
-            buckets.setdefault(classify(subject), []).append(linkify(subject, upstream))
+            continue
+        buckets.setdefault(classify(subject), []).append(linkify(subject, upstream))
 
     order = []
     for _, group in GROUPS:
@@ -126,15 +122,6 @@ def render(pairs: list[tuple[str, str]], upstream: str, fork_set: set[str] | Non
             lines.append(f"- {upper_first(subject)}")
         lines.append("")
 
-    if fork_lines:
-        lines.append("<details>")
-        lines.append(f"<summary>Fork maintenance ({len(fork_lines)} commits)</summary>")
-        lines.append("")
-        for subject in fork_lines:
-            lines.append(f"- {subject}")
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
     return "\n".join(lines).rstrip() + "\n" if lines else ""
 
 
