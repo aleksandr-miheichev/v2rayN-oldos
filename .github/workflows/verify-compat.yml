@@ -1,0 +1,287 @@
+name: verify compatibility with older systems
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# Release gate. Nothing is uploaded to a release until every job here is green,
+# because a broken artifact that is already public cannot be un-published.
+#
+# Three independent things are proven:
+#   1. the managed code still builds and its unit tests pass;
+#   2. no shipped binary declares a glibc requirement above the promised
+#      baseline (catches a regression before anything is executed);
+#   3. the real package installs and the real application starts on the oldest
+#      systems this fork supports, resolved by those systems' own loaders.
+
+on:
+  workflow_call:
+    inputs:
+      glibc_baseline:
+        description: Highest glibc symbol version any shipped binary may require.
+        required: false
+        type: string
+        default: '2.34'
+      release_tag:
+        description: The tag being released, recorded in the build manifest.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with: { fetch-depth: '1' }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with: { dotnet-version: '10.0.1xx' }
+
+      - name: Run tests
+        run: dotnet test v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release --nologo
+
+  abi-baseline:
+    name: ABI baseline of shipped binaries
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with: { fetch-depth: '1' }
+
+      - name: Download the built Debian packages
+        uses: actions/download-artifact@v8
+        with: { name: release-deb, path: dist }
+
+      - name: Unpack the amd64 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$(find dist -name 'v2rayN-linux-64.deb' -print -quit)"
+          [[ -n "$deb" ]] || { echo "v2rayN-linux-64.deb not found in the artifact"; exit 1; }
+          mkdir -p unpacked
+          dpkg-deb -x "$deb" unpacked
+
+      - name: Check the glibc baseline
+        shell: bash
+        run: |
+          chmod 755 scripts/fork/check-abi-baseline.sh
+          ./scripts/fork/check-abi-baseline.sh unpacked '${{ inputs.glibc_baseline }}'
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with: { dotnet-version: '10.0.1xx' }
+
+      - name: Restore to resolve the full package graph
+        run: dotnet restore v2rayN/ServiceLib/ServiceLib.csproj
+
+      - name: Record the build manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fork/manifest.py build \
+            --output manifest.json \
+            --assets v2rayN/ServiceLib/obj/project.assets.json \
+            --package-root unpacked \
+            --version '${{ inputs.release_tag }}' \
+            --commit "${GITHUB_SHA}" \
+            --dotnet-sdk "$(dotnet --version)"
+
+      - name: Upload the build manifest
+        uses: actions/upload-artifact@v7
+        with: { name: build-manifest, path: manifest.json, if-no-files-found: error }
+
+  deb-install:
+    name: install and launch on ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ 'ubuntu:22.04', 'debian:12' ]
+    steps:
+      - name: Prepare the container
+        shell: bash
+        env: { DEBIAN_FRONTEND: noninteractive }
+        run: |
+          set -euo pipefail
+          apt-get update
+          # xauth is a separate package and xvfb-run refuses to start without it.
+          apt-get install -y --no-install-recommends ca-certificates xvfb xauth procps findutils
+
+      - name: Download the built Debian packages
+        uses: actions/download-artifact@v8
+        with: { name: release-deb, path: dist }
+
+      - name: Install the package
+        shell: bash
+        env: { DEBIAN_FRONTEND: noninteractive }
+        run: |
+          set -euo pipefail
+          deb="$(find dist -name 'v2rayN-linux-64.deb' -print -quit)"
+          [[ -n "$deb" ]] || { echo "v2rayN-linux-64.deb not found in the artifact"; exit 1; }
+          apt-get update
+          # Fails here when a declared dependency floor is higher than this
+          # distribution can satisfy, which is one half of the bug being guarded.
+          apt-get install -y "$(readlink -f "$deb")"
+
+      - name: Check the loader accepts the shipped libraries
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          while IFS= read -r -d '' lib; do
+            case "$lib" in
+              # Optional LTTng tracing provider. It is unresolvable unless
+              # liblttng-ust is installed, which is why upstream's own rpm spec
+              # carries "__requires_exclude ^liblttng-ust\.so\..*$".
+              */libcoreclrtraceptprovider.so) continue ;;
+            esac
+            out="$(ldd -r "$lib" 2>&1)" || true
+            # Only versioned-symbol failures are meaningful here. ldd resolves a
+            # library in isolation, whereas at runtime the .NET host has already
+            # brought libc, libm and the rest of the process image with it, so a
+            # bare "undefined symbol: cos" says nothing about whether it works.
+            # A missing GLIBC version is different: that is precisely how the
+            # upstream builds failed on these systems.
+            if grep -qE '(GLIBC(XX)?_|CXXABI_)[0-9A-Z_.]*.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
+              fail=1
+              echo "::error::the loader on this system cannot satisfy ${lib}"
+              grep -E 'not found' <<<"$out" | head -20
+            elif grep -qE '=> not found' <<<"$out"; then
+              echo "::warning::${lib} references libraries absent from this image"
+              grep -E '=> not found' <<<"$out" | head -10
+            fi
+          done < <(find /opt/v2rayN -maxdepth 1 -type f -name '*.so' -print0)
+          if [[ "$fail" -ne 0 ]]; then
+            echo "The dynamic loader on this system cannot satisfy the shipped binaries."
+            exit 1
+          fi
+          echo "All shipped shared objects resolve on this system."
+
+      - name: Start the application headless
+        shell: bash
+        env:
+          SYSTEM: ${{ matrix.image }}
+        run: |
+          set -uo pipefail
+          # The runner already runs this shell with -e, so the exit status has
+          # to be captured with || rather than read afterwards from $?.
+          rc=0
+          timeout --signal=TERM 60 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1 || rc=$?
+          echo "exit code: ${rc}"
+          echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
+
+          # The failure this fork exists to prevent. Always fatal.
+          if grep -qiE 'GLIBC_|GLIBCXX_|CXXABI_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+            echo "::error::${SYSTEM} cannot load the shipped native libraries"
+            exit 1
+          fi
+
+          # Direct evidence that the native SQLite library was loaded and used:
+          # the application cannot create its database without it.
+          db="$(find / -xdev -name 'guiNDB.db' 2>/dev/null | head -n1)"
+          if [[ -n "$db" ]]; then
+            echo "SQLite database created at ${db} -- the native library works on ${SYSTEM}."
+            exit 0
+          fi
+
+          # No database, so fall back to whether the process stayed alive. 124
+          # means the timeout killed it, which is the expected outcome for a GUI
+          # application that started correctly.
+          if [[ "$rc" -eq 124 || "$rc" -eq 0 ]]; then
+            echo "::warning::no database was created on ${SYSTEM}, but the application stayed up"
+            exit 0
+          fi
+          echo "::error::the application exited with ${rc} on ${SYSTEM} and created no database"
+          exit 1
+
+  rpm-install:
+    name: install and launch on rockylinux:9
+    runs-on: ubuntu-24.04
+    container: rockylinux/rockylinux:9
+    steps:
+      - name: Prepare the container
+        shell: bash
+        run: |
+          set -euo pipefail
+          # xauth ships separately here too, and xvfb-run needs it.
+          dnf -y install findutils procps-ng xorg-x11-server-Xvfb xorg-x11-xauth
+
+      - name: Download the built RPM packages
+        uses: actions/download-artifact@v8
+        with: { name: release-rpm, path: dist }
+
+      - name: Install the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm_file="$(find dist -name 'v2rayN-linux-rhel-64.rpm' -print -quit)"
+          [[ -n "$rpm_file" ]] || { echo "v2rayN-linux-rhel-64.rpm not found in the artifact"; exit 1; }
+          dnf -y install "$(readlink -f "$rpm_file")"
+
+      - name: Check the loader accepts the shipped libraries
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          while IFS= read -r -d '' lib; do
+            case "$lib" in
+              # Optional LTTng tracing provider. It is unresolvable unless
+              # liblttng-ust is installed, which is why upstream's own rpm spec
+              # carries "__requires_exclude ^liblttng-ust\.so\..*$".
+              */libcoreclrtraceptprovider.so) continue ;;
+            esac
+            out="$(ldd -r "$lib" 2>&1)" || true
+            # Only versioned-symbol failures are meaningful here. ldd resolves a
+            # library in isolation, whereas at runtime the .NET host has already
+            # brought libc, libm and the rest of the process image with it, so a
+            # bare "undefined symbol: cos" says nothing about whether it works.
+            # A missing GLIBC version is different: that is precisely how the
+            # upstream builds failed on these systems.
+            if grep -qE '(GLIBC(XX)?_|CXXABI_)[0-9A-Z_.]*.*not found|GLIBC_ABI_DT_RELR' <<<"$out"; then
+              fail=1
+              echo "::error::the loader on this system cannot satisfy ${lib}"
+              grep -E 'not found' <<<"$out" | head -20
+            elif grep -qE '=> not found' <<<"$out"; then
+              echo "::warning::${lib} references libraries absent from this image"
+              grep -E '=> not found' <<<"$out" | head -10
+            fi
+          done < <(find /opt/v2rayN -maxdepth 1 -type f -name '*.so' -print0)
+          [[ "$fail" -eq 0 ]] || exit 1
+          echo "All shipped shared objects resolve on this system."
+
+      - name: Start the application headless
+        shell: bash
+        env:
+          SYSTEM: rockylinux:9
+        run: |
+          set -uo pipefail
+          # The runner already runs this shell with -e, so the exit status has
+          # to be captured with || rather than read afterwards from $?.
+          rc=0
+          timeout --signal=TERM 60 xvfb-run -a /usr/bin/v2rayn >/tmp/v2rayn.log 2>&1 || rc=$?
+          echo "exit code: ${rc}"
+          echo '--- application output ---'; tail -n 80 /tmp/v2rayn.log || true
+
+          if grep -qiE 'GLIBC_|GLIBCXX_|CXXABI_|DllNotFoundException|Unable to load shared library|e_sqlite3' /tmp/v2rayn.log; then
+            echo "::error::${SYSTEM} cannot load the shipped native libraries"
+            exit 1
+          fi
+
+          db="$(find / -xdev -name 'guiNDB.db' 2>/dev/null | head -n1)"
+          if [[ -n "$db" ]]; then
+            echo "SQLite database created at ${db} -- the native library works on ${SYSTEM}."
+            exit 0
+          fi
+
+          if [[ "$rc" -eq 124 || "$rc" -eq 0 ]]; then
+            echo "::warning::no database was created on ${SYSTEM}, but the application stayed up"
+            exit 0
+          fi
+          echo "::error::the application exited with ${rc} on ${SYSTEM} and created no database"
+          exit 1

@@ -1,0 +1,81 @@
+name: pull request ABI check
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# The native SQLite library is the single dependency that decides whether this
+# fork still runs on the systems it exists for. A version bump can raise its
+# glibc baseline without changing a line of source, which is exactly how
+# upstream lost Ubuntu 22.04, Debian 12 and RHEL 9.
+#
+# The library ships inside the NuGet package, so a restore is enough to inspect
+# it. There is no need to build and package the application to answer the only
+# question that matters here.
+
+on:
+  pull_request:
+    paths:
+      - 'v2rayN/Directory.Packages.props'
+      - 'v2rayN/**/*.csproj'
+      - 'scripts/fork/check-abi-baseline.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  abi:
+    name: native dependencies stay within the baseline
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with: { fetch-depth: '1' }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with: { dotnet-version: '10.0.1xx' }
+
+      - name: Restore
+        run: dotnet restore v2rayN/ServiceLib/ServiceLib.csproj
+
+      - name: Collect the native assets that would ship
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native
+          # Only the Linux runtime identifiers this fork publishes; the ABI
+          # baseline is meaningless for the Windows and macOS assets.
+          found=0
+          while IFS= read -r -d '' lib; do
+            case "$lib" in
+              */runtimes/linux-x64/*|*/runtimes/linux-arm64/*) ;;
+              *) continue ;;
+            esac
+            target="native/$(echo "$lib" | sed 's|.*/runtimes/||; s|/|_|g')"
+            cp "$lib" "$target"
+            found=$((found + 1))
+          done < <(find ~/.nuget/packages -type f -name '*.so' -print0)
+          echo "Collected $found native libraries."
+          [[ "$found" -gt 0 ]] || { echo "No Linux native assets were restored."; exit 1; }
+
+      - name: Check the glibc baseline
+        run: |
+          chmod 755 scripts/fork/check-abi-baseline.sh
+          ./scripts/fork/check-abi-baseline.sh native 2.34
+
+  auto-merge:
+    name: merge the dependency update
+    needs: abi
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # The update is reviewed by the check above rather than by a human: it is
+      # a single allow-listed package, and the property that matters about it is
+      # machine-checkable.
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --rebase '${{ github.event.pull_request.html_url }}'

@@ -52,6 +52,10 @@ jobs:
         submodules: 'recursive'
         fetch-depth: '0'
 
+    - name: Apply the fork's submodule patches
+      shell: bash
+      run: bash scripts/fork/apply-fork-patches.sh
+
     - name: Purge SDKs
       shell: pwsh
       run: |
@@ -72,6 +76,17 @@ jobs:
       uses: actions/setup-dotnet@v6.0.0
       with:
         dotnet-version: '10.0.1xx'
+
+    - name: Resolve the fork version from the release tag
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Only four-component tags belong to this fork. Matching loosely would
+        # pick up an upstream three-component tag, and the build would then
+        # claim a version that the update check treats as "already current".
+        version="$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)"
+        echo "Fork version: ${version:-<none, using the upstream version>}"
+        echo "FORK_VERSION=${version}" >> "$GITHUB_ENV"
 
     - name: Build v2rayN
       shell: bash

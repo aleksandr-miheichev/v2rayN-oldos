@@ -1,4 +1,5 @@
 name: release Windows x86
+# Part of this fork's release pipeline; the product branch is oldos.
 
 on:
   workflow_dispatch:
@@ -9,7 +10,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
   package-x86:
@@ -34,6 +35,10 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+
+      - name: Apply the fork's submodule patches
+        shell: bash
+        run: bash scripts/fork/apply-fork-patches.sh
 
       - name: Purge SDKs
         shell: pwsh
@@ -245,3 +250,21 @@ jobs:
       file_pattern: '*.zip'
     secrets:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+  nudge-finalize:
+    name: ask the finalizer to look now
+    if: inputs.release_tag != ''
+    needs: [ release-x86 ]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch finalize-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Completion events of token-dispatched runs are never delivered
+          # (recursion prevention), so promotion used to wait for a cron tick
+          # -- up to half an hour of a complete release sitting as a
+          # prerelease. workflow_dispatch is the one event the default token
+          # may create, so the build asks the finalizer to look right now.
+          gh workflow run finalize-release.yml --ref oldos
