@@ -32,14 +32,14 @@ permissions:
 jobs:
   unit-tests:
     name: unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with: { fetch-depth: '1' }
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@v6
         with: { dotnet-version: '10.0.1xx' }
 
       - name: Run tests
@@ -47,7 +47,7 @@ jobs:
 
   abi-baseline:
     name: ABI baseline of shipped binaries
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -73,7 +73,7 @@ jobs:
           ./scripts/fork/check-abi-baseline.sh unpacked '${{ inputs.glibc_baseline }}'
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6.0.0
+        uses: actions/setup-dotnet@v6
         with: { dotnet-version: '10.0.1xx' }
 
       - name: Restore to resolve the full package graph
@@ -97,11 +97,13 @@ jobs:
 
   deb-install:
     name: install and launch on ${{ matrix.image }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
+        # Deliberately OLD and never to be bumped: these are the systems this
+        # fork exists for, and proving the packages work here is the mission.
         image: [ 'ubuntu:22.04', 'debian:12' ]
     steps:
       - name: Prepare the container
@@ -202,7 +204,7 @@ jobs:
 
   rpm-install:
     name: install and launch on rockylinux:9
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     container: rockylinux/rockylinux:9
     steps:
       - name: Prepare the container
