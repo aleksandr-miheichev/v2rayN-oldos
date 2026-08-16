@@ -8,7 +8,7 @@ on:
         type: string
   push:
     branches:
-      - oldos
+      - patches
 
 permissions:
   contents: write
@@ -34,7 +34,7 @@ jobs:
     name: ask the finalizer to look now
     if: inputs.release_tag != ''
     needs: [ release-zip ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch finalize-release
         env:
