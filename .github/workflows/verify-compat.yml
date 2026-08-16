@@ -40,6 +40,7 @@ jobs:
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
+        # Deliberate pin: upstream's SDK band, see build.yml.
         with: { dotnet-version: '10.0.1xx' }
 
       - name: Run tests
@@ -74,6 +75,7 @@ jobs:
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
+        # Deliberate pin: upstream's SDK band, see build.yml.
         with: { dotnet-version: '10.0.1xx' }
 
       - name: Restore to resolve the full package graph
