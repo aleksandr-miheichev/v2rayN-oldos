@@ -45,7 +45,7 @@ env:
 jobs:
   sync:
     name: rebase the patch stack and rebuild the product branch
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout the patch branch
         uses: actions/checkout@v7
