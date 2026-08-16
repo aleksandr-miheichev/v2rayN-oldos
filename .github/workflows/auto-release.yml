@@ -43,7 +43,7 @@ env:
 jobs:
   release:
     name: cut a release if there is anything to release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout the product branch
         uses: actions/checkout@v7

@@ -8,7 +8,7 @@ on:
         type: string
   push:
     branches:
-      - oldos
+      - patches
 
 permissions:
   contents: write
@@ -35,7 +35,10 @@ jobs:
   deb:
     name: build and release deb x64 & arm64
     if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
+    # Deliberate pin: the container is the packaging environment, and its
+    # dpkg decides the .deb format floor -- change it consciously, the
+    # compatibility gate will judge the result.
     container: debian:13
     env:
       RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
@@ -75,7 +78,9 @@ jobs:
   rpm:
     name: build and release rpm x64 & arm64
     if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
+    # Deliberate pin: the rpm toolchain of this container sets the package
+    # format floor -- change it consciously, the gate will judge the result.
     container: registry.access.redhat.com/ubi10/ubi
     env:
       RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
@@ -146,7 +151,7 @@ jobs:
   publish-manifest:
     name: attach the build manifest to the release
     needs: verify
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
     - name: Download the build manifest
       uses: actions/download-artifact@v8
@@ -181,7 +186,7 @@ jobs:
     name: ask the finalizer to look now
     if: inputs.release_tag != ''
     needs: [ release-zip, release-deb, release-rpm, publish-manifest ]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Dispatch finalize-release
         env:
