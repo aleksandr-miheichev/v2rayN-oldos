@@ -3,7 +3,7 @@ name: Code Test
 on:
   pull_request:
     branches:
-      - master
+      - oldos
     paths:
       - 'v2rayN/ServiceLib/Services/CoreConfig/**'
       - 'v2rayN/ServiceLib/Handler/Fmt/**'
@@ -20,8 +20,10 @@ jobs:
         fetch-depth: '0'
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v6.0.0
+      uses: actions/setup-dotnet@v6
       with:
+        # Deliberate pin: upstream's own value in their PR-test workflow;
+        # kept for parity, the real test run is in verify-compat.yml.
         dotnet-version: '8.0.x'
 
     - name: Test Code

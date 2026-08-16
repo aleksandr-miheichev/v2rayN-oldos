@@ -848,7 +848,7 @@ public class Utils
     {
         try
         {
-            return Assembly.GetExecutingAssembly()?.GetName()?.Version?.ToString(3) ?? "0.0";
+            return Assembly.GetExecutingAssembly()?.GetName()?.Version?.ToString() ?? "0.0";
         }
         catch (Exception ex)
         {
