@@ -3,7 +3,7 @@ name: Code Test
 on:
   pull_request:
     branches:
-      - master
+      - oldos
     paths:
       - 'v2rayN/ServiceLib/Services/CoreConfig/**'
       - 'v2rayN/ServiceLib/Handler/Fmt/**'
@@ -20,10 +20,14 @@ jobs:
         fetch-depth: '0'
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v6.0.0
+      uses: actions/setup-dotnet@v6
       with:
-        dotnet-version: '8.0.x'
+        # Deliberate pin: upstream's SDK band, see build.yml. Upstream still
+        # asks for 8.0.x here, which cannot build net10.0 at all (NETSDK1045);
+        # the workflow only survives because it runs on pull requests, which
+        # this fork never receives. Proposed upstream in 2dust/v2rayN#9975.
+        dotnet-version: '10.0.1xx'
 
     - name: Test Code
       working-directory: ./v2rayN
-      run: dotnet test ./ServiceLib.Tests
+      run: dotnet run --project ./ServiceLib.Tests -c Release
