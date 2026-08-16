@@ -44,7 +44,7 @@ jobs:
         with: { dotnet-version: '10.0.1xx' }
 
       - name: Run tests
-        run: dotnet test v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release --nologo
+        run: dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release
 
   abi-baseline:
     name: ABI baseline of shipped binaries
