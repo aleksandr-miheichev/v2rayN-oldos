@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     steps:
     - name: Import GPG private key
       shell: bash
