@@ -83,7 +83,13 @@ jobs:
         run: |
           set -euo pipefail
           git branch -f master upstream/master
-          git push --force-with-lease origin master
+          # Push failures are captured rather than only printed, so the issue
+          # this workflow files can name the cause instead of pointing at a log.
+          if ! out="$(git push --force-with-lease origin master 2>&1)"; then
+            printf '%s\n' "$out" | tee -a "${RUNNER_TEMP}/sync-failure.txt"
+            exit 1
+          fi
+          printf '%s\n' "$out"
 
       - name: Rebase the patch stack
         id: rebase
@@ -103,8 +109,11 @@ jobs:
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${PATCH_BRANCH}")" ]]; then
             echo "The patch branch did not move."
+          elif ! out="$(git push --force-with-lease origin "HEAD:refs/heads/${PATCH_BRANCH}" 2>&1)"; then
+            printf '%s\n' "$out" | tee -a "${RUNNER_TEMP}/sync-failure.txt"
+            exit 1
           else
-            git push --force-with-lease origin "HEAD:refs/heads/${PATCH_BRANCH}"
+            printf '%s\n' "$out"
           fi
 
       - name: Rebuild the product branch as upstream plus one commit
@@ -131,8 +140,27 @@ jobs:
           new="$(git commit-tree "$tree" -p "$parent" \
             -m 'fork: keep Ubuntu 22.04, Debian 12, RHEL 9 and macOS 13.6 supported' \
             -m "Squashed from the ${count} commits on branch ${PATCH_BRANCH}, where the full per-change history lives. This branch always reads as upstream master plus this one commit.")"
-          git push --force-with-lease origin "${new}:refs/heads/${PRODUCT_BRANCH}"
+          if ! out="$(git push --force-with-lease origin "${new}:refs/heads/${PRODUCT_BRANCH}" 2>&1)"; then
+            printf '%s\n' "$out" | tee -a "${RUNNER_TEMP}/sync-failure.txt"
+            exit 1
+          fi
+          printf '%s\n' "$out"
           echo "Product branch rebuilt: ${new}"
+
+      # A green run that leaves the fork behind is false comfort: every other
+      # pipeline stays green while releases ship progressively older code.
+      - name: Fail if the product branch is still behind upstream
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags origin "${PRODUCT_BRANCH}"
+          behind="$(git rev-list --count "origin/${PRODUCT_BRANCH}..upstream/master")"
+          if [[ "$behind" != "0" ]]; then
+            printf '%s\n' "The product branch is still ${behind} commits behind upstream after a sync that reported success." \
+              | tee -a "${RUNNER_TEMP}/sync-failure.txt"
+            exit 1
+          fi
+          echo "The product branch carries every upstream commit."
 
       - name: Open an issue when the rebase conflicts
         if: steps.rebase.outputs.conflict == 'true'
@@ -141,9 +169,14 @@ jobs:
         run: |
           set -euo pipefail
           # One open issue at a time, otherwise every hourly run would file
-          # another one for the same conflict.
-          existing="$(gh issue list --state open --label upstream-conflict --json number --jq '.[0].number' || true)"
-          if [[ -n "$existing" ]]; then
+          # another one for the same conflict. The query is allowed to fail the
+          # step rather than being swallowed: treating an API outage as "no
+          # issue exists" is what produced duplicates once.
+          if ! existing="$(gh issue list --state open --label upstream-conflict --json number --jq '.[0].number')"; then
+            echo "Could not query open issues; filing nothing rather than risking a duplicate."
+            exit 1
+          fi
+          if [[ -n "$existing" && "$existing" != "null" ]]; then
             echo "Issue #$existing is already open for this conflict."
             exit 0
           fi
@@ -182,17 +215,48 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          existing="$(gh issue list --state open --label sync-failure --json number --jq '.[0].number' || true)"
+          # Fails closed: an API outage must not be read as "nothing is open"
+          # and produce a second issue for a failure already reported.
+          if ! existing="$(gh issue list --state open --label sync-failure --json number --jq '.[0].number')"; then
+            echo "Could not query open issues; filing nothing rather than risking a duplicate."
+            exit 1
+          fi
           if [[ -n "$existing" && "$existing" != "null" ]]; then
             echo "Issue #$existing is already open for a failing sync."
             exit 0
           fi
+
+          captured="$(cat "${RUNNER_TEMP}/sync-failure.txt" 2>/dev/null || true)"
+
+          # One failure mode deserves its own instructions, because no amount of
+          # permission tuning fixes it: the default token may not write files
+          # under .github/workflows, and the permissions block has no key that
+          # grants it. Upstream touching any workflow file trips this.
+          diagnosis='The log above holds the reason.'
+          if grep -q 'without .workflows. permission' <<<"$captured"; then
+            diagnosis="$(printf '%s\n' \
+              '**Cause: the default token may not change workflow files.**' \
+              '' \
+              'Upstream modified something under `.github/workflows/`, and this sync pushes with `GITHUB_TOKEN`, which GitHub forbids from creating or updating workflow files. This cannot be fixed with the `permissions:` block -- no `workflows` key exists there.' \
+              '' \
+              'Fix it one of two ways:' \
+              '' \
+              '- add a personal access token with the `workflow` scope as the `SYNC_TOKEN` secret and let this workflow push with it;' \
+              '- or run the sync by hand once (`git push` from a machine whose credentials carry that scope).')"
+          fi
+
           gh label create sync-failure --color D93F0B \
             --description "The hourly upstream sync is failing for a reason other than a rebase conflict" 2>/dev/null || true
           gh issue create --title "Upstream sync failed (run ${{ github.run_id }})" --label sync-failure --body "$(printf '%s\n' \
             'The hourly sync with upstream failed before reaching a rebase conflict.' \
             '' \
             'While this stays broken, the fork no longer receives upstream commits and releases keep shipping progressively older code -- with every other pipeline green.' \
+            '' \
+            "${diagnosis}" \
+            '' \
+            '```' \
+            "${captured:-(no output was captured)}" \
+            '```' \
             '' \
             'Log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
             '' \
