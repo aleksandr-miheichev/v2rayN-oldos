@@ -162,6 +162,29 @@ jobs:
           fi
           echo "The product branch carries every upstream commit."
 
+      # Both issue bodies say "close once a sync run succeeds", and doing that
+      # by hand was forgotten twice. Reaching this step means the whole chain
+      # held: mirror current, stack rebased, product rebuilt, nothing behind --
+      # which is exactly the evidence those issues wait for.
+      - name: Close resolved sync issues
+        if: steps.rebase.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for label in sync-failure upstream-conflict; do
+            # Fails closed like the filing steps: an API error skips closing
+            # rather than guessing; the next green run retries.
+            if ! nums="$(gh issue list --state open --label "$label" --json number --jq '.[].number')"; then
+              echo "Could not query ${label} issues; leaving them for the next run."
+              continue
+            fi
+            for n in $nums; do
+              gh issue close "$n" --comment "Closed automatically: sync run ${{ github.run_id }} completed green -- the mirror, the patch stack and the product branch are all current." \
+                || echo "Could not close #$n; the next green run will retry."
+            done
+          done
+
       - name: Open an issue when the rebase conflicts
         if: steps.rebase.outputs.conflict == 'true'
         env:
