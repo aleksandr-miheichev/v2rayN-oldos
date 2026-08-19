@@ -75,8 +75,10 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v6
       with:
-
-        dotnet-version: 10.0.1xx
+        # Fork divergence: float on the major with ga quality, so a new .NET
+        # 10 feature band arrives on its own; upstream pins the 10.0.1xx band.
+        dotnet-version: '10.x'
+        dotnet-quality: 'ga'
 
     - name: Resolve the fork version from the release tag
       shell: bash
