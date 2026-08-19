@@ -1,6 +1,3 @@
-using AwesomeAssertions;
-using Xunit;
-
 namespace ServiceLib.Tests.Models;
 
 /// <summary>
@@ -12,55 +9,55 @@ namespace ServiceLib.Tests.Models;
 /// </summary>
 public class SemanticVersionTests
 {
-    [Fact]
-    public void RemoteRevisionNewerThanLocal_ShouldBeTreatedAsUpdate()
+    [Test]
+    public async Task RemoteRevisionNewerThanLocal_ShouldBeTreatedAsUpdate()
     {
         var current = new SemanticVersion("7.24.6");
         var remote = new SemanticVersion("7.24.6.1");
 
         // This is the exact check performed by UpdateService.ParseDownloadUrl.
-        (current >= remote).Should().BeFalse();
-        (remote >= current).Should().BeTrue();
+        await (current >= remote).Should().BeFalse();
+        await (remote >= current).Should().BeTrue();
     }
 
-    [Fact]
-    public void HigherRevision_ShouldBeGreaterThanLowerRevision()
+    [Test]
+    public async Task HigherRevision_ShouldBeGreaterThanLowerRevision()
     {
         var older = new SemanticVersion("7.24.6.1");
         var newer = new SemanticVersion("7.24.6.2");
 
-        (newer >= older).Should().BeTrue();
-        (older >= newer).Should().BeFalse();
-        (older <= newer).Should().BeTrue();
+        await (newer >= older).Should().BeTrue();
+        await (older >= newer).Should().BeFalse();
+        await (older <= newer).Should().BeTrue();
     }
 
-    [Fact]
-    public void PatchComponent_ShouldStillOutrankRevision()
+    [Test]
+    public async Task PatchComponent_ShouldStillOutrankRevision()
     {
         var older = new SemanticVersion("7.24.6.9");
         var newer = new SemanticVersion("7.24.7");
 
-        (newer >= older).Should().BeTrue();
-        (older >= newer).Should().BeFalse();
+        await (newer >= older).Should().BeTrue();
+        await (older >= newer).Should().BeFalse();
     }
 
-    [Fact]
-    public void MissingRevision_ShouldEqualExplicitZero()
+    [Test]
+    public async Task MissingRevision_ShouldEqualExplicitZero()
     {
-        new SemanticVersion("7.24.6").Should().Be(new SemanticVersion("7.24.6.0"));
-        new SemanticVersion("7.24.6").Should().NotBe(new SemanticVersion("7.24.6.1"));
+        await new SemanticVersion("7.24.6").Should().BeEqualTo(new SemanticVersion("7.24.6.0"));
+        await new SemanticVersion("7.24.6").Should().NotBeEqualTo(new SemanticVersion("7.24.6.1"));
     }
 
-    [Fact]
-    public void VersionPrefixAndTwoComponentForm_ShouldStillParse()
+    [Test]
+    public async Task VersionPrefixAndTwoComponentForm_ShouldStillParse()
     {
-        new SemanticVersion("v7.24.6.1").Should().Be(new SemanticVersion("7.24.6.1"));
-        new SemanticVersion("7.24").Should().Be(new SemanticVersion(7, 24, 0));
+        await new SemanticVersion("v7.24.6.1").Should().BeEqualTo(new SemanticVersion("7.24.6.1"));
+        await new SemanticVersion("7.24").Should().BeEqualTo(new SemanticVersion(7, 24, 0));
     }
 
-    [Fact]
-    public void UnparsableVersion_ShouldFallBackToZero()
+    [Test]
+    public async Task UnparsableVersion_ShouldFallBackToZero()
     {
-        new SemanticVersion("7.24.6-oldos.1").Should().Be(new SemanticVersion(0, 0, 0));
+        await new SemanticVersion("7.24.6-oldos.1").Should().BeEqualTo(new SemanticVersion(0, 0, 0));
     }
 }
