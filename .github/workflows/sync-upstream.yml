@@ -20,10 +20,12 @@ on:
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
-  # A push to patches rebuilds oldos within a minute. The sync's own pushes
-  # use GITHUB_TOKEN, whose events start no workflows, so this cannot loop.
+  # A push to patches rebuilds oldos within a minute; a push to master lets a
+  # just-reviewed workflow change resume the sync without waiting out the
+  # hour. The sync's own pushes use GITHUB_TOKEN, whose events start no
+  # workflows, so this cannot loop.
   push:
-    branches: [ patches ]
+    branches: [ patches, master ]
 
 permissions:
   contents: write
@@ -78,8 +80,85 @@ jobs:
           # the pipe early would turn a large backlog into a SIGPIPE failure.
           [[ "$count" == "0" ]] || git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
 
+      # The owner reads every upstream change to .github/workflows before it
+      # may run in this repository. The gate is also what lets this sync live
+      # without a workflow-scoped credential: GitHub rejects a push that
+      # introduces workflow content the repository has not seen at the tip of
+      # any branch (issues #14, #15, #16), and the permissions block has no
+      # `workflows` key to grant -- so unreviewed CI commits could not be
+      # pushed from here anyway. Comparing the mirror to upstream, not just
+      # the incoming batch, keeps the gate armed even if an earlier review
+      # pushed patches but forgot the mirror.
+      - name: Stop for manual review when upstream changed its workflows
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only origin/master upstream/master -- .github/workflows/)"
+          if [[ -z "$changed" ]]; then
+            echo "review=false" >> "$GITHUB_OUTPUT"
+            echo "No workflow changes; the sync may proceed on its own."
+            exit 0
+          fi
+          echo "review=true" >> "$GITHUB_OUTPUT"
+          printf 'Upstream changed:\n%s\n' "$changed"
+
+          # Fails closed, like every issue-filing step here: an API outage
+          # must not be read as "nothing is open" and produce a duplicate.
+          if ! existing="$(gh issue list --state open --label workflows-review --json number --jq '.[0].number')"; then
+            echo "Could not query open issues; filing nothing rather than risking a duplicate."
+            exit 1
+          fi
+          if [[ -n "$existing" && "$existing" != "null" ]]; then
+            echo "Issue #$existing is already waiting for this review."
+            exit 0
+          fi
+
+          gh label create workflows-review --color FBCA04 \
+            --description "Upstream changed its CI; the sync waits for a human review" 2>/dev/null || true
+
+          # Substring, not a pipe through head: pipefail would turn head
+          # closing the pipe early into a SIGPIPE failure on a large diff.
+          diff_text="$(git diff origin/master upstream/master -- .github/workflows/)"
+
+          body_file="$(mktemp)"
+          {
+            printf 'Upstream changed files under `.github/workflows/`, and this fork takes such changes only after a human has read them. The hourly sync parks itself until the review lands.\n\n'
+            printf 'While this issue is open the fork receives no upstream commits at all -- including any product commits waiting in the same batch.\n\n'
+            printf 'To review and resume:\n\n'
+            printf '```bash\n'
+            printf 'git fetch upstream master\n'
+            printf 'git checkout patches\n'
+            printf 'git rebase upstream/master\n'
+            printf '# read the workflow changes, resolve conflicts if any, then:\n'
+            printf 'git push origin upstream/master:master   # the mirror first, or the gate stays armed\n'
+            printf 'git push --force-with-lease origin patches\n'
+            printf '# the sync rebuilds oldos from patches by itself\n'
+            printf '```\n\n'
+            printf 'Both pushes need a credential with the workflow scope; the token this sync runs with does not carry it, which is one of the two reasons this gate exists.\n\n'
+            printf 'Workflow files upstream touched:\n\n'
+            printf '```\n%s\n```\n\n' "$changed"
+            printf 'The change itself:\n\n'
+            printf '```diff\n'
+            printf '%s\n' "${diff_text:0:50000}"
+            if [[ "${#diff_text}" -gt 50000 ]]; then
+              printf '... (truncated; the full diff is one git diff origin/master upstream/master -- .github/workflows/ away)\n'
+            fi
+            printf '```\n\n'
+            printf 'Upstream commits waiting behind this review:\n\n'
+            printf '```\n'
+            git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
+            printf '```\n\n'
+            printf 'The first green sync run closes this issue automatically.\n'
+          } > "$body_file"
+
+          gh issue create --title 'Upstream changed .github/workflows -- review before it syncs' \
+            --label workflows-review --body-file "$body_file"
+          exit 1
+
       - name: Update the mirror branch
-        if: steps.incoming.outputs.count != '0'
+        if: steps.incoming.outputs.count != '0' && steps.gate.outputs.review != 'true'
         run: |
           set -euo pipefail
           git branch -f master upstream/master
@@ -93,6 +172,7 @@ jobs:
 
       - name: Rebase the patch stack
         id: rebase
+        if: steps.gate.outputs.review != 'true'
         run: |
           set -uo pipefail
           # A no-op when upstream has not moved (the push-to-patches trigger).
@@ -162,9 +242,9 @@ jobs:
           fi
           echo "The product branch carries every upstream commit."
 
-      # Both issue bodies say "close once a sync run succeeds", and doing that
-      # by hand was forgotten twice. Reaching this step means the whole chain
-      # held: mirror current, stack rebased, product rebuilt, nothing behind --
+      # The issue bodies say "a green run closes this", and doing it by hand
+      # was forgotten twice. Reaching this step means the whole chain held:
+      # mirror current, stack rebased, product rebuilt, nothing behind --
       # which is exactly the evidence those issues wait for.
       - name: Close resolved sync issues
         if: steps.rebase.outputs.conflict == 'false'
@@ -172,7 +252,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for label in sync-failure upstream-conflict; do
+          for label in sync-failure upstream-conflict workflows-review; do
             # Fails closed like the filing steps: an API error skips closing
             # rather than guessing; the next green run retries.
             if ! nums="$(gh issue list --state open --label "$label" --json number --jq '.[].number')"; then
@@ -233,7 +313,7 @@ jobs:
       # shipping ever-older code. The failure sweep deliberately skips this
       # workflow, so it must speak for itself.
       - name: Report any other failure of this sync
-        if: failure() && steps.rebase.outputs.conflict != 'true'
+        if: failure() && steps.rebase.outputs.conflict != 'true' && steps.gate.outputs.review != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -251,21 +331,17 @@ jobs:
 
           captured="$(cat "${RUNNER_TEMP}/sync-failure.txt" 2>/dev/null || true)"
 
-          # One failure mode deserves its own instructions, because no amount of
-          # permission tuning fixes it: the default token may not write files
-          # under .github/workflows, and the permissions block has no key that
-          # grants it. Upstream touching any workflow file trips this.
+          # One failure mode deserves its own instructions: no credential
+          # without the workflow scope may introduce workflow content the
+          # repository has never seen, and the permissions block has no key
+          # that grants it. The review gate above stops the sync before any
+          # push can trip this, so reaching it means the gate missed a case.
           diagnosis='The log above holds the reason.'
           if grep -q 'without .workflows. permission' <<<"$captured"; then
             diagnosis="$(printf '%s\n' \
-              '**Cause: the default token may not change workflow files.**' \
+              '**Cause: a push introduced workflow content this repository had never seen, and the token this sync runs with may not do that.**' \
               '' \
-              'Upstream modified something under `.github/workflows/`, and this sync pushes with `GITHUB_TOKEN`, which GitHub forbids from creating or updating workflow files. This cannot be fixed with the `permissions:` block -- no `workflows` key exists there.' \
-              '' \
-              'Fix it one of two ways:' \
-              '' \
-              '- add a personal access token with the `workflow` scope as the `SYNC_TOKEN` secret and let this workflow push with it;' \
-              '- or run the sync by hand once (`git push` from a machine whose credentials carry that scope).')"
+              'The manual-review gate exists to park the sync before any push carries changes under `.github/workflows/`, so reaching this error means the gate let one through. Unblock the fork by hand (`git push` from a machine whose credentials carry the workflow scope), then work out why the gate did not stop first.')"
           fi
 
           gh label create sync-failure --color D93F0B \
