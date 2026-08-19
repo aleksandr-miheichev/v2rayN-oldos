@@ -40,8 +40,8 @@ jobs:
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
-        # Deliberate pin: upstream's SDK band, see build.yml.
-        with: { dotnet-version: '10.0.1xx' }
+        # Same SDK policy as build.yml: float on the major, ga quality only.
+        with: { dotnet-version: '10.x', dotnet-quality: 'ga' }
 
       - name: Run tests
         run: dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release
@@ -75,8 +75,8 @@ jobs:
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
-        # Deliberate pin: upstream's SDK band, see build.yml.
-        with: { dotnet-version: '10.0.1xx' }
+        # Same SDK policy as build.yml: float on the major, ga quality only.
+        with: { dotnet-version: '10.x', dotnet-quality: 'ga' }
 
       - name: Restore to resolve the full package graph
         run: dotnet restore v2rayN/ServiceLib/ServiceLib.csproj
