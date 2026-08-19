@@ -183,6 +183,41 @@ jobs:
             git rebase --abort || true
           fi
 
+      # The failure git cannot report as a conflict. Upstream can drop a
+      # dependency the fork's own files rely on without touching a single line
+      # they contain, and the rebase then succeeds: that is how the migration
+      # to TUnit left this fork's only test file on xunit (issue #17). Nothing
+      # compiled the merged tree until the release gate ran -- by then the tag
+      # was cut and the release could no longer be completed. Compiling here,
+      # before anything is published, is the only thing that sees this class.
+      - name: Setup .NET
+        if: steps.rebase.outputs.conflict == 'false'
+        uses: actions/setup-dotnet@v6
+        # Same SDK policy as build.yml: float on the major, ga quality only.
+        with: { dotnet-version: '10.x', dotnet-quality: 'ga' }
+
+      - name: Build and run the tests on the rebased tree
+        if: steps.rebase.outputs.conflict == 'false'
+        run: |
+          set -uo pipefail
+          if dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release \
+               >"${RUNNER_TEMP}/tests.log" 2>&1; then
+            tail -n 20 "${RUNNER_TEMP}/tests.log"
+            exit 0
+          fi
+          cat "${RUNNER_TEMP}/tests.log"
+          # Only the tail reaches the issue this sync files. A build failure
+          # prints far more than the 65536 characters a GitHub issue body
+          # accepts, and an over-long body would fail the reporting step
+          # itself -- silencing the report for exactly the failure it exists
+          # for. The first line is what the reader sees before the output.
+          {
+            echo 'The patch stack no longer builds or passes its tests on top of upstream.'
+            echo
+            tail -n 120 "${RUNNER_TEMP}/tests.log" | tail -c 20000
+          } >> "${RUNNER_TEMP}/sync-failure.txt"
+          exit 1
+
       - name: Push the rebased patch stack
         if: steps.rebase.outputs.conflict == 'false'
         run: |
