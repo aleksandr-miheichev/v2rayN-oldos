@@ -645,7 +645,7 @@ public class Global
         { ECoreType.overtls, "ShadowsocksR-Live/overtls" },
         { ECoreType.shadowquic, "spongebob888/shadowquic" },
         { ECoreType.mieru, "enfein/mieru" },
-        { ECoreType.v2rayN, "2dust/v2rayN" },
+        { ECoreType.v2rayN, "aleksandr-miheichev/v2rayN-oldos" },
     };
 
     public static readonly List<string> OtherGeoUrls =

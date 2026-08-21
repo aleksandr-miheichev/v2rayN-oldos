@@ -1,11 +1,28 @@
 version: 2
-updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "daily"
 
+# Scoped down from upstream's configuration on purpose.
+#
+# Upstream updates its own NuGet packages and action versions, and those
+# commits reach this fork through the hourly sync. If Dependabot updated them
+# here as well, two sources would be editing the same lines and nearly every
+# upstream dependency bump would land as a rebase conflict.
+#
+# What is left is the one dependency this fork owns: the native SQLite package
+# that replaces upstream's. It stays pinned rather than floating, because an
+# upgrade that arrives as a commit can be reverted, appears in the release
+# notes, and is checked by the ABI guard before it can merge. A floating
+# version would swap the shipped native library with no commit and no review --
+# which is how support for older systems was lost in the first place.
+updates:
   - package-ecosystem: "nuget"
-    directory: "/"
+    directory: "/v2rayN"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    allow:
+      - dependency-name: "SourceGear.sqlite3"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"

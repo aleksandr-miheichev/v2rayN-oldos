@@ -1,0 +1,169 @@
+# A green run of this workflow means "looked, nothing to report" -- it fires
+# on every watched completion and on a schedule, not only on failures. The
+# name says watchdog so a green line does not read as a failure having
+# happened.
+name: release watchdog
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# A failed release is silent by default. The pipeline stops, the prerelease
+# keeps whatever assets reached it, and nothing says so anywhere except a log
+# nobody is watching. This turns every failure into an issue that carries the
+# error annotations the failing jobs already emit, so the reason is readable
+# without opening Actions at all.
+#
+# Two triggers on purpose. workflow_run reacts within seconds. The schedule is
+# a backstop: these builds are started with the default token through
+# workflow_dispatch, and if that lifecycle event were ever not delivered the
+# failure would go unnoticed forever. Both paths are idempotent because the run
+# id is part of the issue title.
+#
+# "sync with upstream" is deliberately absent from the watch list: it reports
+# its own rebase conflicts with the commit list and the resolution commands,
+# which is more useful than anything this workflow could reconstruct.
+
+on:
+  workflow_run:
+    workflows:
+      - release Linux
+      - release macOS
+      - release Windows
+      - release Windows desktop (Avalonia UI)
+      - release Windows x86
+      - release all platforms
+      - auto release
+      - finalize release
+    types: [ completed ]
+  schedule:
+    - cron: '23,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  actions: read
+  contents: read
+
+concurrency:
+  group: report-failure
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: open an issue for every unreported failure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide which runs to report
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_run" ]]; then
+            if [[ "$TRIGGER_CONCLUSION" != "failure" ]]; then
+              echo "The run succeeded, nothing to report."
+              echo "runs=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "runs=${TRIGGER_RUN}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Backstop sweep: anything that failed in the last six hours and is
+          # not the self-reporting sync workflow. Filtering happens in awk
+          # rather than inside --jq, because the shell would have to escape
+          # nested quotes and jq's join() refuses an array of numbers anyway.
+          #
+          # The window is keyed to the run's completion (updatedAt), not its
+          # creation: a macOS run once sat queued for the full 24-hour limit,
+          # was "in progress" through every sweep, and by the time it finally
+          # failed its creation date had left the window. Completion events for
+          # token-dispatched runs are also never delivered (GitHub recursion
+          # prevention), so this sweep was its only chance -- and missed.
+          since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name \
+            --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name] | @tsv' \
+            | awk -v since="$since" -F'\t' '
+                $2 == "failure" && $3 > since &&
+                $4 != "sync with upstream" && $4 != "release watchdog" { printf "%s ", $1 }')"
+          echo "runs=${runs}" >> "$GITHUB_OUTPUT"
+          echo "Failed runs in the window: ${runs:-none}"
+
+      - name: Open an issue for each failure
+        if: steps.collect.outputs.runs != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUNS: ${{ steps.collect.outputs.runs }}
+        run: |
+          set -euo pipefail
+
+          gh label create release-failure --color D93F0B \
+            --description "A release was blocked by a failing job" 2>/dev/null || true
+
+          for run_id in $RUNS; do
+            run_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}")"
+            name="$(jq -r '.name' <<<"$run_json")"
+            url="$(jq -r '.html_url' <<<"$run_json")"
+            sha="$(jq -r '.head_sha' <<<"$run_json")"
+            branch="$(jq -r '.head_branch' <<<"$run_json")"
+            title="Release blocked: ${name} (run #${run_id})"
+
+            # Idempotent across both triggers and across repeated sweeps.
+            existing="$(gh issue list --state all --label release-failure --limit 60 \
+              --json number,title --jq "[ .[] | select(.title | contains(\"#${run_id}\")) | .number ][0]" || true)"
+            if [[ -n "$existing" && "$existing" != "null" ]]; then
+              echo "Run ${run_id} is already reported in issue #${existing}."
+              continue
+            fi
+
+            body_file="$(mktemp)"
+            {
+              printf 'The **%s** workflow failed, so this release was not published.\n\n' "$name"
+              printf '| | |\n| --- | --- |\n'
+              printf '| Run | [#%s](%s) |\n' "$run_id" "$url"
+              printf '| Branch | `%s` |\n' "$branch"
+              printf '| Commit | [`%s`](https://github.com/%s/commit/%s) |\n' "${sha:0:12}" "$GH_REPO" "$sha"
+              printf '\n## What failed\n\n'
+            } > "$body_file"
+
+            jobs_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100")"
+            jq -r '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' <<<"$jobs_json" \
+            | while IFS=$'\t' read -r job_id job_name job_url; do
+                printf '### [%s](%s)\n\n' "$job_name" "$job_url" >> "$body_file"
+
+                steps="$(jq -r --arg id "$job_id" \
+                  '.jobs[] | select(.id == ($id | tonumber)) | .steps[]? | select(.conclusion == "failure") | "- failed step: `\(.name)`"' \
+                  <<<"$jobs_json" || true)"
+                if [[ -n "$steps" ]]; then
+                  printf '%s\n\n' "$steps" >> "$body_file"
+                fi
+
+                # The annotations are the jobs' own ::error:: messages, which
+                # say what went wrong in one line each. Far more useful than a
+                # link to a log where the reason is buried in setup output.
+                notes="$(gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations" \
+                  --jq '.[] | select(.annotation_level == "failure") | "- " + (.message | split("\n")[0])' 2>/dev/null || true)"
+                if [[ -n "$notes" ]]; then
+                  printf '%s\n\n' "$notes" >> "$body_file"
+                else
+                  printf '_No annotations; open the job log._\n\n' >> "$body_file"
+                fi
+              done
+
+            {
+              printf '\n## What this means\n\n'
+              printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
+              printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
+              printf 'If the cause was transient, re-run the pipeline for the existing tag. '
+              printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
+              printf '```bash\ngh workflow run build-linux.yml --repo %s --ref refs/tags/<tag> --field release_tag=<tag>\n```\n\n' \
+                "$GH_REPO"
+              printf 'Close this issue once the release completes.\n'
+            } >> "$body_file"
+
+            gh issue create --title "$title" --label release-failure --body-file "$body_file"
+            echo "Reported run ${run_id}."
+          done
