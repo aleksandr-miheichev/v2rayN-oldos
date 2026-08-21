@@ -260,3 +260,5 @@ internal static class CoreConfigTestFactory
         return config;
     }
 }
+
+// probe: paths filter (throwaway)
