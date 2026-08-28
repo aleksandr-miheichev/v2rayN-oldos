@@ -3,7 +3,7 @@ name: Code Test
 on:
   pull_request:
     branches:
-      - master
+      - oldos
     paths:
       - 'v2rayN/ServiceLib/**'
       - 'v2rayN/ServiceLib.UdpTest/**'
