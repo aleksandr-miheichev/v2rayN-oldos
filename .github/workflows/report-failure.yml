@@ -16,6 +16,11 @@ name: release watchdog
 # pushes master, with a PAT, which fires upstream's own push-to-master
 # builds -- pure upstream code, never this fork's release signal.
 #
+# Pull request runs (Dependabot's weekly dependency bump firing the test
+# and ABI gates) reach the backstop sweep as well. They become issues too:
+# a failing check on a bot's PR notifies nobody. But they get their own
+# title and label, because no release was blocked by them.
+#
 # Two triggers on purpose. workflow_run reacts within seconds. The schedule is
 # a backstop: these builds are started with the default token through
 # workflow_dispatch, and if that lifecycle event were ever not delivered the
@@ -119,6 +124,8 @@ jobs:
 
           gh label create release-failure --color D93F0B \
             --description "A release was blocked by a failing job" 2>/dev/null || true
+          gh label create pr-check-failure --color FBCA04 \
+            --description "A pull request check failed" 2>/dev/null || true
 
           for run_id in $RUNS; do
             run_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}")"
@@ -126,10 +133,24 @@ jobs:
             url="$(jq -r '.html_url' <<<"$run_json")"
             sha="$(jq -r '.head_sha' <<<"$run_json")"
             branch="$(jq -r '.head_branch' <<<"$run_json")"
-            title="Release blocked: ${name} (run #${run_id})"
+            event="$(jq -r '.event' <<<"$run_json")"
+
+            # The sweep catches pull_request runs too: Dependabot's weekly
+            # bump fires Code Test and the ABI gate, and a red check on a
+            # bot's PR notifies no one, so it still deserves an issue --
+            # but not one that claims a release was blocked.
+            if [[ "$event" == "pull_request" ]]; then
+              label="pr-check-failure"
+              pr_number="$(jq -r '(.pull_requests[0].number)? // empty' <<<"$run_json")"
+              title="PR check failed: ${name} (run #${run_id})"
+            else
+              label="release-failure"
+              pr_number=""
+              title="Release blocked: ${name} (run #${run_id})"
+            fi
 
             # Idempotent across both triggers and across repeated sweeps.
-            existing="$(gh issue list --state all --label release-failure --limit 60 \
+            existing="$(gh issue list --state all --label "$label" --limit 60 \
               --json number,title --jq "[ .[] | select(.title | contains(\"#${run_id}\")) | .number ][0]" || true)"
             if [[ -n "$existing" && "$existing" != "null" ]]; then
               echo "Run ${run_id} is already reported in issue #${existing}."
@@ -138,9 +159,16 @@ jobs:
 
             body_file="$(mktemp)"
             {
-              printf 'The **%s** workflow failed, so this release was not published.\n\n' "$name"
+              if [[ "$event" == "pull_request" ]]; then
+                printf 'The **%s** workflow failed on a pull request run -- a check on incoming changes, not the release pipeline.\n\n' "$name"
+              else
+                printf 'The **%s** workflow failed, so this release was not published.\n\n' "$name"
+              fi
               printf '| | |\n| --- | --- |\n'
               printf '| Run | [#%s](%s) |\n' "$run_id" "$url"
+              if [[ -n "$pr_number" ]]; then
+                printf '| Pull request | #%s |\n' "$pr_number"
+              fi
               printf '| Branch | `%s` |\n' "$branch"
               printf '| Commit | [`%s`](https://github.com/%s/commit/%s) |\n' "${sha:0:12}" "$GH_REPO" "$sha"
               printf '\n## What failed\n\n'
@@ -170,17 +198,26 @@ jobs:
                 fi
               done
 
-            {
-              printf '\n## What this means\n\n'
-              printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
-              printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
-              printf 'If the cause was transient, re-run the pipeline for the existing tag. '
-              printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
-              printf '```bash\ngh workflow run build-linux.yml --repo %s --ref refs/tags/<tag> --field release_tag=<tag>\n```\n\n' \
-                "$GH_REPO"
-              printf 'Close this issue once the release completes.\n'
-            } >> "$body_file"
+            if [[ "$event" == "pull_request" ]]; then
+              {
+                printf '\n## What this means\n\n'
+                printf 'No release was affected: this run checked a pull request, and nothing ships from a pull request until it merges.\n\n'
+                printf 'Re-run the failed check from the pull request once the cause is addressed, or close the pull request to decline the change.\n\n'
+                printf 'Close this issue once the check is green or the pull request is closed.\n'
+              } >> "$body_file"
+            else
+              {
+                printf '\n## What this means\n\n'
+                printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
+                printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
+                printf 'If the cause was transient, re-run the pipeline for the existing tag. '
+                printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
+                printf '```bash\ngh workflow run build-linux.yml --repo %s --ref refs/tags/<tag> --field release_tag=<tag>\n```\n\n' \
+                  "$GH_REPO"
+                printf 'Close this issue once the release completes.\n'
+              } >> "$body_file"
+            fi
 
-            gh issue create --title "$title" --label release-failure --body-file "$body_file"
+            gh issue create --title "$title" --label "$label" --body-file "$body_file"
             echo "Reported run ${run_id}."
           done
