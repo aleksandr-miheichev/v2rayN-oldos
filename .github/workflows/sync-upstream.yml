@@ -137,6 +137,7 @@ jobs:
             printf '# the sync rebuilds oldos from patches by itself\n'
             printf '```\n\n'
             printf 'Both pushes need a credential with the workflow scope; the token this sync runs with does not carry it, which is one of the two reasons this gate exists.\n\n'
+            printf 'Pushing the mirror with a PAT also starts the workflows upstream triggers on pushes to master (the release builds, plus Code Test when its paths match). They build pure upstream code and publish nothing; the release watchdog ignores mirror-branch push runs, so let them run.\n\n'
             printf 'Workflow files upstream touched:\n\n'
             printf '```\n%s\n```\n\n' "$changed"
             printf 'The change itself:\n\n'
