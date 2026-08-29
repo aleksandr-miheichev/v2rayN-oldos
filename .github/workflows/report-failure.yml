@@ -11,6 +11,11 @@ name: release watchdog
 # error annotations the failing jobs already emit, so the reason is readable
 # without opening Actions at all.
 #
+# One deliberate blind spot: runs started by a push to the mirror branch
+# (event push on master). Only a human unparking a workflows-review gate
+# pushes master, with a PAT, which fires upstream's own push-to-master
+# builds -- pure upstream code, never this fork's release signal.
+#
 # Two triggers on purpose. workflow_run reacts within seconds. The schedule is
 # a backstop: these builds are started with the default token through
 # workflow_dispatch, and if that lifecycle event were ever not delivered the
@@ -59,6 +64,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           TRIGGER_RUN: ${{ github.event.workflow_run.id }}
           TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
           if [[ "$EVENT" == "workflow_run" ]]; then
@@ -67,12 +74,21 @@ jobs:
               echo "runs=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            # The mirror blind spot from the header: upstream's builds fired
+            # by the unparking push carry the same workflow names as the
+            # fork's own, so match on the branch/event pair, not the name.
+            if [[ "$TRIGGER_EVENT" == "push" && "$TRIGGER_BRANCH" == "master" ]]; then
+              echo "Mirror push on master; upstream's code, not a product signal."
+              echo "runs=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "runs=${TRIGGER_RUN}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Backstop sweep: anything that failed in the last six hours and is
-          # not the self-reporting sync workflow. Filtering happens in awk
+          # Backstop sweep: anything that failed in the last six hours except
+          # the self-reporting sync workflow and mirror-branch push runs (the
+          # blind spot from the header). Filtering happens in awk
           # rather than inside --jq, because the shell would have to escape
           # nested quotes and jq's join() refuses an array of numbers anyway.
           #
@@ -83,11 +99,12 @@ jobs:
           # token-dispatched runs are also never delivered (GitHub recursion
           # prevention), so this sweep was its only chance -- and missed.
           since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-          runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name \
-            --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name] | @tsv' \
+          runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name,headBranch,event \
+            --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name, .headBranch, .event] | @tsv' \
             | awk -v since="$since" -F'\t' '
                 $2 == "failure" && $3 > since &&
-                $4 != "sync with upstream" && $4 != "release watchdog" { printf "%s ", $1 }')"
+                $4 != "sync with upstream" && $4 != "release watchdog" &&
+                !($5 == "master" && $6 == "push") { printf "%s ", $1 }')"
           echo "runs=${runs}" >> "$GITHUB_OUTPUT"
           echo "Failed runs in the window: ${runs:-none}"
 
