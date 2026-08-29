@@ -127,8 +127,15 @@ jobs:
           gh label create pr-check-failure --color FBCA04 \
             --description "A pull request check failed" 2>/dev/null || true
 
+          # One run's bad API answer must not silence the rest of the list:
+          # skip it loudly and let the next sweep retry it (the six-hour
+          # window keeps it eligible). A silenced real failure is the one
+          # unacceptable outcome for a watchdog.
           for run_id in $RUNS; do
-            run_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}")"
+            run_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}")" || {
+              echo "::warning::Fetching run ${run_id} failed; the next sweep will retry it."
+              continue
+            }
             name="$(jq -r '.name' <<<"$run_json")"
             url="$(jq -r '.html_url' <<<"$run_json")"
             sha="$(jq -r '.head_sha' <<<"$run_json")"
@@ -151,7 +158,7 @@ jobs:
 
             # Idempotent across both triggers and across repeated sweeps.
             existing="$(gh issue list --state all --label "$label" --limit 60 \
-              --json number,title --jq "[ .[] | select(.title | contains(\"#${run_id}\")) | .number ][0]" || true)"
+              --json number,title --jq "[ .[] | select(.title | contains(\"(run #${run_id})\")) | .number ][0]" || true)"
             if [[ -n "$existing" && "$existing" != "null" ]]; then
               echo "Run ${run_id} is already reported in issue #${existing}."
               continue
@@ -174,13 +181,16 @@ jobs:
               printf '\n## What failed\n\n'
             } > "$body_file"
 
-            jobs_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100")"
-            jq -r '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' <<<"$jobs_json" \
+            jobs_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100")" || {
+              echo "::warning::Fetching jobs for run ${run_id} failed; the next sweep will retry it."
+              continue
+            }
+            jq -r '.jobs[]? | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' <<<"$jobs_json" \
             | while IFS=$'\t' read -r job_id job_name job_url; do
                 printf '### [%s](%s)\n\n' "$job_name" "$job_url" >> "$body_file"
 
                 steps="$(jq -r --arg id "$job_id" \
-                  '.jobs[] | select(.id == ($id | tonumber)) | .steps[]? | select(.conclusion == "failure") | "- failed step: `\(.name)`"' \
+                  '.jobs[]? | select(.id == ($id | tonumber)) | .steps[]? | select(.conclusion == "failure") | "- failed step: `\(.name)`"' \
                   <<<"$jobs_json" || true)"
                 if [[ -n "$steps" ]]; then
                   printf '%s\n\n' "$steps" >> "$body_file"
