@@ -5,6 +5,7 @@ public class SemanticVersion
     private readonly int major;
     private readonly int minor;
     private readonly int patch;
+    private readonly int revision;
     private readonly string version;
 
     public SemanticVersion(int major, int minor, int patch)
@@ -40,6 +41,7 @@ public class SemanticVersion
                 major = int.Parse(parts[0]);
                 minor = int.Parse(parts[1]);
                 patch = int.Parse(parts[2]);
+                revision = parts.Length == 4 ? int.Parse(parts[3]) : 0;
             }
             else
             {
@@ -58,7 +60,7 @@ public class SemanticVersion
     {
         if (obj is SemanticVersion other)
         {
-            return major == other.major && minor == other.minor && patch == other.patch;
+            return major == other.major && minor == other.minor && patch == other.patch && revision == other.revision;
         }
         else
         {
@@ -68,7 +70,7 @@ public class SemanticVersion
 
     public override int GetHashCode()
     {
-        return major.GetHashCode() ^ minor.GetHashCode() ^ patch.GetHashCode();
+        return major.GetHashCode() ^ minor.GetHashCode() ^ patch.GetHashCode() ^ revision.GetHashCode();
     }
 
     /// <summary>
@@ -138,7 +140,7 @@ public class SemanticVersion
                 }
                 else
                 {
-                    return true;
+                    return revision >= other.revision;
                 }
             }
         }
@@ -176,7 +178,7 @@ public class SemanticVersion
                 }
                 else
                 {
-                    return true;
+                    return revision <= other.revision;
                 }
             }
         }
