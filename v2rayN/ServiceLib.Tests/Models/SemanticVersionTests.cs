@@ -86,4 +86,24 @@ public class SemanticVersionTests
 
         await Utils.GetVersionInfo().Should().BeEqualTo(assemblyVersion);
     }
+
+    [Test]
+    public async Task StandardVersionString_ShouldKeepTheForkBuildNumber()
+    {
+        // UpdateService.ParseDownloadUrl prints the running version this way in
+        // its "already up to date" message; without the revision a fork build
+        // reads as the upstream release it is based on. Fork builds count from 1.
+        await new SemanticVersion("7.25.1.1").ToStandardVersionString("v").Should().BeEqualTo("v7.25.1.1");
+        await new SemanticVersion("7.25.1.3-beta+exp").ToStandardVersionString().Should().BeEqualTo("7.25.1.3-beta+exp");
+    }
+
+    [Test]
+    public async Task StandardVersionString_ShouldOmitAZeroRevision()
+    {
+        // Core versions are read with a three-component pattern and untagged
+        // builds report a zero revision; both keep upstream's form.
+        await new SemanticVersion("v26.7.28").ToStandardVersionString("v").Should().BeEqualTo("v26.7.28");
+        await new SemanticVersion("1.13.0-beta.3").ToStandardVersionString("v").Should().BeEqualTo("v1.13.0-beta.3");
+        await new SemanticVersion("7.25.1.0").ToStandardVersionString("v").Should().BeEqualTo("v7.25.1");
+    }
 }
