@@ -58,6 +58,32 @@ public class SemanticVersionTests
     [Test]
     public async Task UnparsableVersion_ShouldFallBackToZero()
     {
-        await new SemanticVersion("7.24.6-oldos.1").Should().BeEqualTo(new SemanticVersion(0, 0, 0));
+        // No dash in the input: a "-label" suffix parses as a pre-release and
+        // survives the fallback, so it would not compare equal to 0.0.0.
+        await new SemanticVersion("7.24.x").Should().BeEqualTo(new SemanticVersion(0, 0, 0));
+
+        // The fallback does not reset the revision: it stays zero only because
+        // the revision is parsed after every other component.
+        await new SemanticVersion("7.24.x.5").Should().BeEqualTo(new SemanticVersion(0, 0, 0));
+    }
+
+    [Test]
+    public async Task Revision_ShouldBeComparedBeforePrereleaseLabel()
+    {
+        var prerelease = new SemanticVersion("7.24.6.1-beta");
+
+        await (prerelease > new SemanticVersion("7.24.6")).Should().BeTrue();
+        await (prerelease < new SemanticVersion("7.24.6.1")).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task OwnVersion_ShouldKeepTheRevisionComponent()
+    {
+        // UpdateService.ParseDownloadUrl takes the running version from here. Cut
+        // to three components, every fork build looks older than its own release
+        // tag and the update it already runs is offered forever.
+        var assemblyVersion = typeof(Utils).Assembly.GetName().Version!.ToString();
+
+        await Utils.GetVersionInfo().Should().BeEqualTo(assemblyVersion);
     }
 }
