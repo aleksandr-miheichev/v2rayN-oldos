@@ -20,12 +20,13 @@ on:
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
-  # A push to patches rebuilds oldos within a minute; a push to master lets a
-  # just-reviewed workflow change resume the sync without waiting out the
-  # hour. The sync's own pushes use GITHUB_TOKEN, whose events start no
-  # workflows, so this cannot loop.
+  # A push to patches rebuilds oldos within a minute. master is not listed:
+  # a push runs the workflow files of the pushed commit, and the mirror never
+  # carries this one, so a push to master could never start the sync. The
+  # sync's own pushes use GITHUB_TOKEN, whose events start no workflows, so
+  # this cannot loop.
   push:
-    branches: [ patches, master ]
+    branches: [ patches ]
 
 permissions:
   contents: write
@@ -132,6 +133,8 @@ jobs:
             printf 'git checkout patches\n'
             printf 'git rebase upstream/master\n'
             printf '# read the workflow changes, resolve conflicts if any, then:\n'
+            printf '# with the rebase finished, run the same tests as the sync; push only if they pass:\n'
+            printf 'dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release\n'
             printf 'git push origin upstream/master:master   # the mirror first, or the gate stays armed\n'
             printf 'git push --force-with-lease origin patches\n'
             printf '# the sync rebuilds oldos from patches by itself\n'
@@ -321,6 +324,10 @@ jobs:
           fi
           gh label create upstream-conflict --color B60205 \
             --description "The fork patch stack no longer applies to upstream" 2>/dev/null || true
+          # The commit list goes inside the printf rather than after it: command
+          # substitution strips trailing newlines, so an appended list lost its
+          # blank line and ran straight into the heading (issue #24).
+          commits="$(git log --oneline --max-count=30 "HEAD..upstream/master")"
           body="$(printf '%s\n' \
             'The hourly sync could not rebase the patch stack onto the latest upstream `master`.' \
             '' \
@@ -333,13 +340,17 @@ jobs:
             'git checkout patches' \
             'git rebase upstream/master' \
             '# resolve, then:' \
+            '# with the rebase finished, run the same tests as the sync; push only if they pass:' \
+            'dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release' \
             'git push --force-with-lease origin patches' \
             '# the sync rebuilds oldos from patches by itself' \
             '```' \
             '' \
             'Upstream commits waiting to be integrated:' \
-            '' )"
-          body="${body}$(git log --oneline --max-count=30 "HEAD..upstream/master")"
+            '' \
+            '```' \
+            "$commits" \
+            '```')"
           gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
           exit 1
 
