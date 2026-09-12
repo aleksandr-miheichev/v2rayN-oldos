@@ -124,6 +124,10 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
             sb.Append(prefix);
         }
         sb.Append($"{major}.{minor}.{patch}");
+        if (revision != 0)
+        {
+            sb.Append($".{revision}");
+        }
         if (!string.IsNullOrEmpty(prerelease))
         {
             sb.Append($"-{prerelease}");
