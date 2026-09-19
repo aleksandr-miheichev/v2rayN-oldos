@@ -154,7 +154,7 @@ jobs:
             printf '```\n'
             git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
             printf '```\n\n'
-            printf 'The first green sync run closes this issue automatically.\n'
+            printf 'The first sync run that gets the fork current again closes this issue automatically.\n'
           } > "$body_file"
 
           gh issue create --title 'Upstream changed .github/workflows -- review before it syncs' \
@@ -350,7 +350,9 @@ jobs:
             '' \
             '```' \
             "$commits" \
-            '```')"
+            '```' \
+            '' \
+            'The first sync run that gets the fork current again closes this issue automatically.')"
           gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
           exit 1
 
@@ -406,4 +408,4 @@ jobs:
             '' \
             'Log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
             '' \
-            'Close this issue once a sync run succeeds.')"
+            'The first sync run that gets the fork current again closes this issue automatically.')"
