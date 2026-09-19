@@ -1,0 +1,200 @@
+name: finalize release
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# A release starts life as a prerelease with no assets, so that nothing is
+# advertised before the compatibility gate has had its say. This workflow
+# closes the loop once the assets have arrived:
+#
+#   1. it appends the changes that produced no commit -- a dependency resolving
+#      to a new version, a different SDK patch, a rebuilt native library -- by
+#      diffing this build's manifest against the previous release's;
+#   2. it promotes the prerelease to a full release, which is what the
+#      application looks at when the user has not opted into prereleases.
+#
+# Completion is judged by comparing the release's artifacts against the list in
+# scripts/fork/expected-release-assets.txt. An incomplete release simply stays
+# a prerelease, and report-failure.yml says which pipeline blocked it.
+
+on:
+  # Reacting to the builds finishing is the primary path; the schedule only
+  # catches a run whose lifecycle event never arrived. Relying on a schedule
+  # alone left releases sitting unpromoted, because GitHub delays and drops
+  # frequent cron triggers under load.
+  workflow_run:
+    workflows:
+      - release Linux
+      - release macOS
+      - release Windows
+      - release Windows desktop (Avalonia UI)
+      - release Windows x86
+    types: [ completed ]
+  schedule:
+    - cron: '11,41 * * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Finalize this tag instead of the newest prerelease.
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-release
+  cancel-in-progress: false
+
+env:
+  SETTLE_MINUTES: '3'
+
+jobs:
+  finalize:
+    name: promote a completed prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: oldos
+          fetch-depth: '1'
+
+      - name: Find a prerelease that looks complete
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag='${{ inputs.tag }}'
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release list --limit 20 --json tagName,isPrerelease,isDraft \
+              --jq '[.[] | select(.isPrerelease and (.isDraft | not))][0].tagName' || true)"
+          fi
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No prerelease is waiting."
+            exit 0
+          fi
+          echo "Candidate: $tag"
+
+          # The list above can come from a stale replica right after an edit
+          # elsewhere; issue #4 was this run picking a release that a direct
+          # read no longer agreed about. Trust only the release itself.
+          if [[ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease 2>/dev/null)" != "true" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "A direct read says this is not a waiting prerelease after all."
+            exit 0
+          fi
+
+          assets="$(gh release view "$tag" --json assets --jq '.assets')"
+
+          # Completeness is judged by the artifacts themselves. Waiting for
+          # uploads to go quiet was an indirect signal and stalled forever
+          # whenever any job was re-run. manifest.json is in the list, so its
+          # presence still proves the compatibility gate passed.
+          # The signature checks exist because the artifact and its .sig are
+          # uploaded by two different steps, so one's presence does not imply
+          # the other's -- and promoting an unsigned release breaks its whole
+          # verification story.
+          list_missing() {
+            local assets_json="$1"
+            local out=()
+            while IFS= read -r want; do
+              [[ -n "$want" && "$want" != \#* ]] || continue
+              jq -e --arg n "$want" 'any(.[]; .name == $n)' <<<"$assets_json" >/dev/null 2>&1 \
+                || out+=("$want")
+              case "$want" in
+                manifest.json|v2rayN-public-key.asc) ;;
+                *) jq -e --arg n "${want}.sig" 'any(.[]; .name == $n)' <<<"$assets_json" >/dev/null 2>&1 \
+                     || out+=("${want}.sig") ;;
+              esac
+            done < scripts/fork/expected-release-assets.txt
+            printf '%s\n' "${out[@]:-}"
+          }
+
+          missing="$(list_missing "$assets")"
+          if [[ -n "$missing" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Not complete yet, these artifacts are absent:"
+            echo "$missing" | sed 's/^/  /'
+            exit 0
+          fi
+          echo "Every expected artifact is present."
+
+          # A short pause only to avoid racing the upload of the final file.
+          # Waited out HERE rather than deferred: punting to the next cron
+          # tick once left a complete release sitting as a prerelease for
+          # half an hour, because cron was this workflow's only reliable
+          # trigger and GitHub delays frequent schedules.
+          newest="$(jq -r '[.[].updatedAt] | max' <<<"$assets")"
+          age=$(( ( $(date -u +%s) - $(date -u -d "$newest" +%s) ) / 60 ))
+          echo "Newest asset is ${age} minutes old (settle time ${SETTLE_MINUTES})."
+          if [[ "$age" -lt "$SETTLE_MINUTES" ]]; then
+            wait_s=$(( (SETTLE_MINUTES - age) * 60 ))
+            echo "Waiting ${wait_s}s for the last upload to settle."
+            sleep "$wait_s"
+            assets="$(gh release view "$tag" --json assets --jq '.assets')"
+            missing="$(list_missing "$assets")"
+            if [[ -n "$missing" ]]; then
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              echo "An upload was still in flight; these went missing during the wait:"
+              echo "$missing" | sed 's/^/  /'
+              exit 0
+            fi
+          fi
+
+          previous="$(gh release list --limit 50 --json tagName,isPrerelease \
+            --jq "[.[] | select(.isPrerelease | not) | .tagName][0]" || true)"
+          # Guard against the same staleness in the other direction: comparing
+          # a release against itself would report an empty drift.
+          if [[ "$previous" == "$tag" || "$previous" == "null" ]]; then previous=""; fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+
+      # Promotion is the essential action and runs first; the drift section is
+      # decoration on an already-published release. The old order let a flaky
+      # manifest download (issue #4: a stale replica answered "release not
+      # found" for a release that existed) block the publication itself.
+      - name: Promote the prerelease
+        if: steps.pick.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit '${{ steps.pick.outputs.tag }}' --prerelease=false --latest
+          echo "Released ${{ steps.pick.outputs.tag }}."
+
+      - name: Report the changes that produced no commit
+        if: steps.pick.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Once promoted, the release is never picked again, so this step gets
+          # no second chance -- but a missing decoration must not mark the
+          # publication as failed. Fetch trouble downgrades to a warning.
+          mkdir -p drift
+          if ! gh release download '${{ steps.pick.outputs.tag }}' --pattern manifest.json --dir drift/new --clobber; then
+            echo "::warning::could not fetch this release's manifest; the drift section is skipped"
+            exit 0
+          fi
+
+          previous='${{ steps.pick.outputs.previous }}'
+          if [[ -n "$previous" ]]; then
+            gh release download "$previous" --pattern manifest.json --dir drift/old --clobber || true
+          fi
+
+          python3 scripts/fork/manifest.py diff \
+            drift/old/manifest.json drift/new/manifest.json --output drift/section.md
+
+          if [[ -s drift/section.md ]]; then
+            gh release view '${{ steps.pick.outputs.tag }}' --json body --jq .body > drift/body.md
+            printf '\n' >> drift/body.md
+            cat drift/section.md >> drift/body.md
+            gh release edit '${{ steps.pick.outputs.tag }}' --notes-file drift/body.md
+            echo "Appended:"; cat drift/section.md
+          else
+            echo "Nothing changed outside the commit history."
+          fi
