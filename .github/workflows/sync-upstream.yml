@@ -305,6 +305,7 @@ jobs:
           done
 
       - name: Open an issue when the rebase conflicts
+        id: conflict_issue
         if: steps.rebase.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -314,12 +315,47 @@ jobs:
           # another one for the same conflict. The query is allowed to fail the
           # step rather than being swallowed: treating an API outage as "no
           # issue exists" is what produced duplicates once.
-          if ! existing="$(gh issue list --state open --label upstream-conflict --json number --jq '.[0].number')"; then
+          #
+          # It asks REST rather than `gh issue list`, whose --label form reads
+          # GitHub's search index: an issue filed minutes ago need not be in it
+          # yet, and a "nothing is open" that is merely stale files a duplicate.
+          # Two runs that close together are ordinary here -- a push to patches
+          # starts one beside the hourly schedule.
+          #
+          # Only a plain "none" counts as nothing being open. This endpoint
+          # returns pull requests as well, so a full page of them could be
+          # hiding the issue, and an answer that is not a list of issues is one
+          # this step cannot read. Both mean "unknown": the run files nothing,
+          # and claims nothing about whether the conflict already has an issue.
+          rest_lookup() {
+            gh api "repos/${GH_REPO}/issues?state=open&labels=upstream-conflict&per_page=100" \
+              --jq 'map(select(.pull_request == null)) as $issues
+                    | if ($issues | length) > 0
+                      then ($issues[0].number | numbers) // error("no issue number in the answer")
+                      elif length == 100 then error("pull requests fill the page")
+                      else "none" end'
+          }
+          # `carried` keeps the report step below out. It goes in wherever this
+          # run saw the conflict's issue, and after a filing of its own that
+          # may have landed unseen. It stays out when a lookup answered a plain
+          # "none" and the filing still failed -- and when this step falls over
+          # unexpectedly, which is the one case no marker can describe.
+          carried() { echo "carried=true" >> "$GITHUB_OUTPUT"; }
+          if ! existing="$(rest_lookup)" || [[ -z "$existing" ]]; then
             echo "Could not query open issues; filing nothing rather than risking a duplicate."
+            # With REST unusable, the search index is the only way left to ask
+            # whether this conflict already has an issue, and only its clear
+            # "yes" may keep the report step out: a stale "no" costs one issue
+            # too many, a wrong "yes" costs the alarm itself.
+            if gh issue list --state open --label upstream-conflict --json number \
+                 --jq '.[0].number' | grep -qE '^[0-9]+$'; then
+              carried
+            fi
             exit 1
           fi
-          if [[ -n "$existing" && "$existing" != "null" ]]; then
+          if [[ "$existing" != "none" ]]; then
             echo "Issue #$existing is already open for this conflict."
+            carried
             exit 0
           fi
           gh label create upstream-conflict --color B60205 \
@@ -353,23 +389,61 @@ jobs:
             '```' \
             '' \
             'The first sync run that gets the fork current again closes this issue automatically.')"
-          gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"
+          if ! gh issue create --title "Upstream rebase conflict" --label upstream-conflict --body "$body"; then
+            # gh files through GraphQL, which has answered 503 while REST still
+            # worked, so the filing gets a second try over REST. A create that
+            # failed may still have filed the issue, so REST files only after a
+            # lookup that answers a plain "none".
+            if ! existing="$(rest_lookup)" || [[ -z "$existing" ]]; then
+              echo "Could not confirm a retry is safe; filing nothing rather than risking a duplicate."
+              carried
+              exit 1
+            fi
+            if [[ "$existing" != "none" ]]; then
+              echo "Issue #$existing was filed despite the error."
+              carried
+              exit 1
+            fi
+            # The label has to come back applied: REST is not documented to
+            # apply one that does not exist, and an issue without this label is
+            # invisible to the lookup that keeps the next run from filing
+            # again. It is read off the answer rather than probed beforehand,
+            # because a probe that fails would veto a filing the API was ready
+            # to take -- which is how an outage ends in silence.
+            if ! gh api "repos/${GH_REPO}/issues" --method POST -f title='Upstream rebase conflict' \
+              -f body="$body" -f 'labels[]=upstream-conflict' \
+              --jq 'if any(.labels[]; (.name | ascii_downcase) == "upstream-conflict") then .html_url
+                    else error("filed without its label: " + .html_url) end'; then
+              # This call can file the issue and still answer with an error, so
+              # what the tracker says decides, not what gh returned.
+              if [[ "$(rest_lookup || true)" != none ]]; then carried; fi
+              exit 1
+            fi
+          fi
+          carried
           exit 1
 
       # A conflict has its own rich issue above; everything else -- a failed
       # fetch, a refused force-with-lease, a dead runner tool -- used to be a
       # red run nobody watches, while the fork silently froze and releases kept
       # shipping ever-older code. The failure sweep deliberately skips this
-      # workflow, so it must speak for itself.
+      # workflow, so it must speak for itself. A conflict whose issue could not
+      # be filed belongs here too: the step above hands it over by leaving
+      # `carried` unset, so the one failure with no other carrier still speaks.
       - name: Report any other failure of this sync
-        if: failure() && steps.rebase.outputs.conflict != 'true' && steps.gate.outputs.review != 'true'
+        if: failure() && steps.gate.outputs.review != 'true' && (steps.rebase.outputs.conflict != 'true' || steps.conflict_issue.outputs.carried != 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFLICT: ${{ steps.rebase.outputs.conflict }}
         run: |
           set -euo pipefail
           # Fails closed: an API outage must not be read as "nothing is open"
-          # and produce a second issue for a failure already reported.
-          if ! existing="$(gh issue list --state open --label sync-failure --json number --jq '.[0].number')"; then
+          # and produce a second issue for a failure already reported. It asks
+          # REST for the reason the conflict step above does: `gh issue list
+          # --label` reads the search index, which can still be empty a minute
+          # after an issue was filed -- and conflicts now land here too.
+          if ! existing="$(gh api "repos/${GH_REPO}/issues?state=open&labels=sync-failure&per_page=100" \
+            --jq '[.[] | select(.pull_request == null)][0].number')"; then
             echo "Could not query open issues; filing nothing rather than risking a duplicate."
             exit 1
           fi
@@ -393,10 +467,17 @@ jobs:
               'The manual-review gate exists to park the sync before any push carries changes under `.github/workflows/`, so reaching this error means the gate let one through. Unblock the fork by hand (`git push` from a machine whose credentials carry the workflow scope), then work out why the gate did not stop first.')"
           fi
 
+          # The opening line has to hold on both ways in, and a conflict that
+          # reaches this step is one whose own issue could not be filed.
+          opening='The hourly sync with upstream failed before reaching a rebase conflict.'
+          if [[ "$CONFLICT" == 'true' ]]; then
+            opening='The hourly sync hit a rebase conflict and could not confirm or file the issue that normally carries it -- the log holds the call that failed.'
+          fi
+
           gh label create sync-failure --color D93F0B \
             --description "The hourly upstream sync is failing for a reason other than a rebase conflict" 2>/dev/null || true
           gh issue create --title "Upstream sync failed (run ${{ github.run_id }})" --label sync-failure --body "$(printf '%s\n' \
-            'The hourly sync with upstream failed before reaching a rebase conflict.' \
+            "${opening}" \
             '' \
             'While this stays broken, the fork no longer receives upstream commits and releases keep shipping progressively older code -- with every other pipeline green.' \
             '' \
