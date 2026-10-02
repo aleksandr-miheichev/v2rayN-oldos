@@ -1,0 +1,198 @@
+name: verify macOS compatibility
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# The macOS half of the release gate, mirroring verify-compat.yml on Linux.
+#
+# Two things are proven, and deliberately in this order:
+#
+#   1. no shipped binary declares a newer minimum macOS than this fork
+#      promises. This is metadata, so it holds regardless of which machine
+#      runs it -- and it is precisely what broke upstream, where the native
+#      SQLite library was built on macOS 15 with no deployment target and
+#      therefore refused to load on anything older;
+#   2. the native library actually loads and answers on a real machine of the
+#      oldest supported version. Loading it through ctypes rather than
+#      launching the interface keeps the check deterministic: a GUI failing
+#      to find a window server on a build agent says nothing about whether
+#      the application is compatible with the operating system.
+#
+# Both packages are verified on macos-14, the oldest free runner that is still
+# actually scheduled: a macos-13 job once waited out the full 24-hour queue
+# limit without a runner ever picking it up, which also kept the whole run
+# "in progress" for a day and silenced the failure reporter. The x64 package
+# runs through Rosetta 2, which still exercises the real x64 slices of every
+# binary against this OS.
+
+on:
+  workflow_call:
+    inputs:
+      min_macos:
+        description: >-
+          The oldest macOS release this fork promises to run on. Matches the
+          LSMinimumSystemVersion that package-osx.sh writes into Info.plist,
+          because that is the value LaunchServices actually enforces.
+        required: false
+        type: string
+        default: '13.6'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    name: verify the ${{ matrix.arch }} package on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x64 runs on macos-15 because only Sequoia's Rosetta translates the
+          # AVX2 family that GOAMD64=v3 cores (mihomo) require; arm64 stays on
+          # macos-14 as the oldest runner that is still actually scheduled.
+          - { arch: x64, runner: macos-15, exec_prefix: "arch -x86_64" }
+          - { arch: arm64, runner: macos-14, exec_prefix: "" }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with: { fetch-depth: '1' }
+
+      - name: Report the machine this runs on
+        run: sw_vers && uname -m
+
+      - name: Make sure Rosetta 2 is present
+        if: matrix.arch == 'x64'
+        run: |
+          # The image normally carries it already; install only when it is gone.
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Download the built disk image
+        uses: actions/download-artifact@v8
+        with: { name: "release-dmg-${{ matrix.arch }}", path: dist }
+
+      - name: Take the application out of the disk image
+        run: |
+          set -euo pipefail
+          dmg="$(find dist -name '*.dmg' -print -quit)"
+          [[ -n "$dmg" ]] || { echo "no .dmg in the artifact"; exit 1; }
+          echo "Verifying $(basename "$dmg")"
+          hdiutil attach "$dmg" -nobrowse -quiet -mountpoint /Volumes/v2rayN-verify
+          cp -R /Volumes/v2rayN-verify/v2rayN.app ./v2rayN.app
+          hdiutil detach /Volumes/v2rayN-verify -quiet
+
+      - name: Report the declared minimum system version
+        run: |
+          set -euo pipefail
+          declared="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' v2rayN.app/Contents/Info.plist)"
+          echo "LSMinimumSystemVersion: ${declared}"
+          # LaunchServices enforces this one, so it must not exceed the promise.
+          if [[ "$(printf '%s\n%s\n' '${{ inputs.min_macos }}' "$declared" | sort -V | tail -n1)" == "$declared" \
+                && "$declared" != '${{ inputs.min_macos }}' ]]; then
+            echo "::error::Info.plist demands macOS ${declared}, newer than the promised ${{ inputs.min_macos }}"
+            exit 1
+          fi
+
+      - name: Check the deployment target of every shipped binary
+        run: |
+          chmod 755 scripts/fork/check-macos-baseline.sh
+          # Helper cores under bin/ are separate processes: their declared floor
+          # is reported, but whether they run is judged by executing them below.
+          ./scripts/fork/check-macos-baseline.sh v2rayN.app '${{ inputs.min_macos }}' 'Contents/MacOS/bin/'
+
+      - name: Load the native SQLite library on this machine
+        run: |
+          set -euo pipefail
+          dylib="$(find v2rayN.app -name 'libe_sqlite3.dylib' -print -quit)"
+          [[ -n "$dylib" ]] || { echo "::error::libe_sqlite3.dylib is missing from the bundle"; exit 1; }
+          # The system python at /usr/bin is a universal binary; the toolchain
+          # python that shadows it in PATH is arm64-only, and Rosetta answers
+          # "Bad CPU type in executable" when asked to run it as x86_64.
+          ${{ matrix.exec_prefix }} /usr/bin/python3 - "$dylib" <<'PY'
+          import ctypes, sys
+
+          path = sys.argv[1]
+          lib = ctypes.CDLL(path)          # fails here if the OS is too old
+          lib.sqlite3_libversion.restype = ctypes.c_char_p
+          version = lib.sqlite3_libversion().decode()
+          print(f"loaded {path}")
+          print(f"sqlite3_libversion() -> {version}")
+          if not version:
+              raise SystemExit("the library loaded but reported no version")
+          PY
+
+      - name: Run every bundled core on this macOS
+        run: |
+          set -uo pipefail
+          # The cores are separate processes rather than libraries loaded into
+          # ours, so their Mach-O metadata cannot answer whether they start:
+          # sing-box declares macOS 26.0 as its floor, yet not a single user
+          # report shows it refusing to run anywhere. Executing each one here
+          # is the direct evidence, on exactly the macOS this job runs.
+          failed=0
+          try_core() {
+            local bin="$1"; shift
+            if [[ ! -f "$bin" ]]; then
+              echo "absent  ${bin#v2rayN.app/Contents/MacOS/}"
+              return 0
+            fi
+            chmod +x "$bin"
+            local out
+            if out="$(${{ matrix.exec_prefix }} "$bin" "$@" 2>&1)"; then
+              echo "runs    ${bin#v2rayN.app/Contents/MacOS/}: ${out%%$'\n'*}"
+            elif [[ -n "${{ matrix.exec_prefix }}" && "$out" == *"AMD64 processors with v3"* ]]; then
+              # The binary started -- exec and dyld are past -- and tripped its
+              # own CPUID check against Rosetta's emulated CPU. Every real Intel
+              # Mac able to run macOS 13.6 has the v3 feature set, so this says
+              # nothing about OS compatibility.
+              echo "::warning::${bin#v2rayN.app/Contents/MacOS/} started, then refused Rosetta's CPU profile: ${out%%$'\n'*}"
+            else
+              echo "::error::${bin#v2rayN.app/Contents/MacOS/} cannot run on macOS $(sw_vers -productVersion): ${out%%$'\n'*}"
+              failed=1
+            fi
+          }
+          try_core v2rayN.app/Contents/MacOS/bin/xray/xray version
+          try_core v2rayN.app/Contents/MacOS/bin/sing_box/sing-box version
+          try_core v2rayN.app/Contents/MacOS/bin/mihomo/mihomo -v
+          exit "$failed"
+
+      - name: Start the application
+        run: |
+          set -uo pipefail
+          exe='v2rayN.app/Contents/MacOS/v2rayN'
+          # Guard against the whole step degrading into a warning because a tool
+          # was missing: that is what hid this check the first time, when it
+          # called GNU timeout, which macOS does not ship.
+          [[ -x "$exe" ]] || { echo "::error::${exe} is missing or not executable"; exit 1; }
+
+          "./$exe" >/tmp/v2rayn.log 2>&1 &
+          pid=$!
+          sleep 30
+          alive=0
+          if kill -0 "$pid" 2>/dev/null; then
+            alive=1
+            kill -TERM "$pid" 2>/dev/null || true
+            sleep 5
+            # An app that ignores TERM would keep the wait below hanging until
+            # the job timeout; escalate rather than trust it to be polite.
+            kill -KILL "$pid" 2>/dev/null || true
+          fi
+          rc=0
+          wait "$pid" 2>/dev/null || rc=$?
+
+          echo "still running after 30s: ${alive}, exit code: ${rc}"
+          echo '--- application output ---'; tail -n 60 /tmp/v2rayn.log || true
+
+          # Only loader failures are fatal. A build agent has no user session,
+          # so an interface that cannot open a window proves nothing either way.
+          if grep -qE 'dyld|Library not loaded|Symbol not found|Incompatible library version|image not found' /tmp/v2rayn.log; then
+            echo "::error::the dynamic linker rejected the application on $(sw_vers -productVersion)"
+            exit 1
+          fi
+          if [[ "$alive" -eq 1 ]]; then
+            echo "The application was still running after 30 seconds on $(sw_vers -productVersion)."
+          else
+            echo "::warning::the application exited with ${rc} without a loader error; treated as a headless-session limitation"
+          fi
