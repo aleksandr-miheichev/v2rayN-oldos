@@ -65,10 +65,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          # One read of the list serves both the pick here and the superseded
+          # check below. Separate reads can land on replicas of different
+          # ages, and a staler second answer could hide the very release that
+          # just outranked the candidate. gh fetches up to 100 releases in one
+          # request; keeping --limit below that keeps this a single answer. A
+          # read that fails leaves nothing to pick.
+          releases="$(gh release list --limit 50 --json tagName,isPrerelease,isDraft || true)"
+
           tag='${{ inputs.tag }}'
           if [[ -z "$tag" ]]; then
-            tag="$(gh release list --limit 20 --json tagName,isPrerelease,isDraft \
-              --jq '[.[] | select(.isPrerelease and (.isDraft | not))][0].tagName' || true)"
+            tag="$(jq -r '[.[] | select(.isPrerelease and (.isDraft | not))][0].tagName' <<<"${releases:-[]}")"
           fi
           if [[ -z "$tag" || "$tag" == "null" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -88,20 +95,31 @@ jobs:
 
           # A prerelease that a full release already outranks is superseded,
           # not waiting. Promoting it would take the Latest badge from the
-          # newer build -- --latest below forces that, and make_latest
-          # defaults to true anyway -- and the app's stable channel follows
-          # the badge. Issue #26: a transient 504 left 7.25.4.3 without its
-          # x86 zips, 7.25.4.4 shipped complete the next day, and finishing
-          # 7.25.4.3 as that issue advised would have handed the badge back to
-          # it. An older prerelease whose last build lands late gets here the
-          # same way once the newer one is promoted.
-          # The yardstick is the highest full release, not the one flagged
-          # Latest: the flag can trail a promotion on a stale replica, and an
-          # empty answer must mean "nothing released yet", never "could not
-          # tell". A lookup that fails fails the step instead.
-          released="$(gh release list --limit 50 --json tagName,isPrerelease,isDraft \
-            --jq '.[] | select((.isPrerelease or .isDraft) | not) | .tagName' | sort -V | tail -n 1)"
-          if [[ -n "$released" && "$(printf '%s\n' "$tag" "$released" | sort -V | tail -n 1)" != "$tag" ]]; then
+          # newer build -- --latest below forces that -- and the app's stable
+          # channel follows the badge. Issue #26: a transient 504 left
+          # 7.25.4.3 without its x86 zips, 7.25.4.4 shipped complete the next
+          # day, and finishing 7.25.4.3 as that issue advised would have
+          # handed the badge back to it. An older prerelease whose last build
+          # lands late gets here the same way once the newer one is promoted.
+          #
+          # The yardstick is the highest full release in the read above, not
+          # the release flagged Latest, which can trail a promotion on a stale
+          # replica. Releases come newest first and versions rise with them,
+          # so whatever could outrank a candidate in that read is in it too.
+          # A requested tag the read does not reach cannot be judged, and a
+          # wrong guess costs the Latest badge, so that fails loudly.
+          # Versions are read the way the app reads them (SemanticVersion): a
+          # leading "v" does not count, and only two to four numeric parts
+          # make a version, so a hand-made "nightly" or "2026" cannot outrank
+          # every candidate forever.
+          if ! jq -e --arg t "$tag" 'any(.[]?; .tagName == $t)' <<<"${releases:-[]}" >/dev/null; then
+            echo "::error::${tag} is not among the newest releases just read, so it cannot be checked."
+            exit 1
+          fi
+          released="$(jq -r '.[] | select((.isPrerelease or .isDraft) | not) | .tagName | sub("^[vV]"; "") | select(test("^[0-9]+([.][0-9]+){1,3}$"))' \
+            <<<"$releases" | sort -V | tail -n 1)"
+          candidate="${tag#[vV]}"
+          if [[ -n "$released" && "$(printf '%s\n' "$candidate" "$released" | sort -V | tail -n 1)" != "$candidate" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             msg="${released} is already released and outranks ${tag}, which stays a prerelease."
             if [[ -n '${{ inputs.tag }}' ]]; then echo "::warning::${msg}"; else echo "$msg"; fi
