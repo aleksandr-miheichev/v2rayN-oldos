@@ -86,6 +86,28 @@ jobs:
             exit 0
           fi
 
+          # A prerelease that a full release already outranks is superseded,
+          # not waiting. Promoting it would take the Latest badge from the
+          # newer build -- --latest below forces that, and make_latest
+          # defaults to true anyway -- and the app's stable channel follows
+          # the badge. Issue #26: a transient 504 left 7.25.4.3 without its
+          # x86 zips, 7.25.4.4 shipped complete the next day, and finishing
+          # 7.25.4.3 as that issue advised would have handed the badge back to
+          # it. An older prerelease whose last build lands late gets here the
+          # same way once the newer one is promoted.
+          # The yardstick is the highest full release, not the one flagged
+          # Latest: the flag can trail a promotion on a stale replica, and an
+          # empty answer must mean "nothing released yet", never "could not
+          # tell". A lookup that fails fails the step instead.
+          released="$(gh release list --limit 50 --json tagName,isPrerelease,isDraft \
+            --jq '.[] | select((.isPrerelease or .isDraft) | not) | .tagName' | sort -V | tail -n 1)"
+          if [[ -n "$released" && "$(printf '%s\n' "$tag" "$released" | sort -V | tail -n 1)" != "$tag" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            msg="${released} is already released and outranks ${tag}, which stays a prerelease."
+            if [[ -n '${{ inputs.tag }}' ]]; then echo "::warning::${msg}"; else echo "$msg"; fi
+            exit 0
+          fi
+
           assets="$(gh release view "$tag" --json assets --jq '.assets')"
 
           # Completeness is judged by the artifacts themselves. Waiting for
