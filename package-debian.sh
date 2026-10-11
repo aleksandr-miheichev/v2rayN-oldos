@@ -609,7 +609,12 @@ package_binary() {
   write_desktop_file "$stage"
   write_maintainer_scripts "$debian_dir"
 
-  extra_depends="libc6 (>= 2.39), fontconfig (>= 2.15.0), desktop-file-utils (>= 0.26), xdg-utils (>= 1.1.3), coreutils (>= 9.4), bash (>= 5.2.21), libfreetype6 (>= 2.13)"
+  # ICU is loaded with dlopen by the .NET runtime, so dpkg-shlibdeps cannot see
+  # it. Without it the application dies at startup with FailFast, because the
+  # build keeps globalization enabled for the localised interface. The package
+  # is renamed on every release, hence the list of alternatives: apt takes
+  # whichever one the distribution actually ships.
+  extra_depends="libc6 (>= 2.34), fontconfig (>= 2.13.1), desktop-file-utils (>= 0.26), xdg-utils (>= 1.1.3), coreutils (>= 8.32), bash (>= 5.1), libfreetype6 (>= 2.11), libicu76 | libicu74 | libicu72 | libicu71 | libicu70"
 
   mkdir -p "$workdir/debian"
   cat > "$workdir/debian/control" <<EOF
