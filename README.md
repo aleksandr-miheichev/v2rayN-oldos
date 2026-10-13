@@ -1,3 +1,65 @@
+# v2rayN-oldos
+
+### The same v2rayN, still running on the operating systems upstream dropped
+
+[![Release](https://img.shields.io/github/v/release/aleksandr-miheichev/v2rayN-oldos?logo=github&label=Release)](https://github.com/aleksandr-miheichev/v2rayN-oldos/releases)
+[![Downloads](https://img.shields.io/github/downloads/aleksandr-miheichev/v2rayN-oldos/total?logo=github&label=Downloads)](https://github.com/aleksandr-miheichev/v2rayN-oldos/releases)
+[![Upstream](https://img.shields.io/badge/upstream-2dust%2Fv2rayN-blue?logo=github)](https://github.com/2dust/v2rayN)
+[![License](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
+
+This is an unofficial build of [2dust/v2rayN](https://github.com/2dust/v2rayN). The application is upstream's,
+unchanged in behaviour; the difference is that these builds keep working on systems upstream no longer supports.
+
+| | Supported here |
+| --- | --- |
+| Ubuntu | 22.04 and newer |
+| Debian | 12 and newer |
+| RHEL, Rocky, AlmaLinux | 9 and newer |
+| macOS | 13.6 and newer |
+| Windows | 10 and newer, x64 and arm64 |
+
+**Why this exists.** Upstream releases from 7.23.2 onwards stopped installing on Ubuntu 22.04, Debian 12 and
+RHEL 9. Two independent causes: the native SQLite library began requiring `GLIBC_2.38` and the relative
+relocations ABI tag, and the package metadata began demanding `glibc >= 2.39`. Upstream
+[declined](https://github.com/2dust/v2rayN/pull/9832) to keep supporting older systems. This fork restores both:
+it uses a SQLite build with a `GLIBC_2.34` baseline and declares dependency floors those distributions can meet.
+
+**How it is kept current.** Every upstream commit is pulled in automatically and a release is published without
+waiting for upstream to cut one. No release is published unless its packages have been installed and the
+application has been started on Ubuntu 22.04, Debian 12 and Rocky Linux 9, unless every shipped binary stays
+within the `GLIBC_2.34` baseline, and unless the macOS application launches and its native libraries load on
+macOS 14 and 15 with no shipped binary demanding a newer macOS than 13.6. Release notes are generated from the
+commits that actually landed, and list changes that produced no commit at all — a dependency resolving to a new
+version, a rebuilt native library. A failed release files an issue against this repository by itself, with the
+failing job's own error messages in the body.
+
+**Installing.**
+
+```bash
+# Ubuntu / Debian
+sudo apt install ./v2rayN-linux-64.deb
+# RHEL / Rocky / AlmaLinux
+sudo dnf install ./v2rayN-linux-rhel-64.rpm
+```
+
+On macOS, open the `.dmg` and drag the application to Applications; the build is not notarized, so on first
+launch either right-click → Open, or clear the quarantine flag: `xattr -rd com.apple.quarantine /Applications/v2rayN.app`.
+On Windows, unpack the zip anywhere and run `v2rayN.exe`.
+
+**What is not built here.** LoongArch and RISC-V packages. Everything else upstream publishes is published here.
+
+**Verifying a download.** Each file has a `.sig` beside it, and every release includes `v2rayN-public-key.asc`:
+
+```bash
+gpg --import v2rayN-public-key.asc
+gpg --verify v2rayN-linux-64.deb.sig v2rayN-linux-64.deb
+```
+
+Bugs in the application itself belong [upstream](https://github.com/2dust/v2rayN/issues). Use this repository's
+issues for problems with these builds: packaging, compatibility with older systems, releases and signatures.
+
+---
+
 # v2rayN
 
 ### A GUI client for Windows, Linux and macOS. Support [Xray](https://github.com/XTLS/Xray-core) and [sing-box](https://github.com/SagerNet/sing-box) and [others](https://github.com/2dust/v2rayN/wiki/List-of-supported-cores)
