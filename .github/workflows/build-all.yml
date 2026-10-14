@@ -39,9 +39,9 @@ jobs:
     steps:
 
       - name: Trigger build windows
-        if: inputs.release_tag != ''
+        if: ${{ !cancelled() && inputs.release_tag != '' }}
         run: |
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-windows.yml/dispatches \
@@ -53,9 +53,9 @@ jobs:
             }"
 
       - name: Trigger build linux
-        if: inputs.release_tag != ''
+        if: ${{ !cancelled() && inputs.release_tag != '' }}
         run: |
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-linux.yml/dispatches \
@@ -67,9 +67,9 @@ jobs:
             }"
 
       - name: Trigger build osx
-        if: inputs.release_tag != ''
+        if: ${{ !cancelled() && inputs.release_tag != '' }}
         run: |
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-osx.yml/dispatches \
@@ -81,9 +81,9 @@ jobs:
             }"
 
       - name: Trigger build windows desktop
-        if: inputs.release_tag != ''
+        if: ${{ !cancelled() && inputs.release_tag != '' }}
         run: |
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-windows-desktop.yml/dispatches \
@@ -95,9 +95,9 @@ jobs:
             }"
             
       - name: Trigger build windows x86
-        if: inputs.release_tag != ''
+        if: ${{ !cancelled() && inputs.release_tag != '' }}
         run: |
-          curl -X POST \
+          curl --fail-with-body -X POST \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-windows-x86.yml/dispatches \
