@@ -21,11 +21,11 @@ name: release watchdog
 # a failing check on a bot's PR notifies nobody. But they get their own
 # title and label, because no release was blocked by them.
 #
-# Two triggers on purpose. workflow_run reacts within seconds. The schedule is
-# a backstop: these builds are started with the default token through
-# workflow_dispatch, and if that lifecycle event were ever not delivered the
-# failure would go unnoticed forever. Both paths are idempotent because the run
-# id is part of the issue title.
+# Two triggers on purpose. workflow_run reacts within seconds, but GitHub never
+# delivers the completion of a run started with the default token -- and that
+# is how the platform builds and build-all are dispatched, so for them the
+# schedule is the only path. Both paths are idempotent because the run id is
+# part of the issue title.
 #
 # "sync with upstream" is deliberately absent from the watch list: it reports
 # its own rebase conflicts with the commit list and the resolution commands,
@@ -73,9 +73,24 @@ jobs:
           TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
+          # The conclusions that can mean a run did not do its job although
+          # nobody chose that. startup_failure is a run GitHub could not
+          # start: an invalid workflow file, or a GitHub fault at startup,
+          # which the outages of 2026-08-26 and 2026-10-07 left in other
+          # repositories. Such a run has no job, so no step of its own can
+          # report it. cancelled is mostly a choice -- a person's, or a newer
+          # run's in the same concurrency group -- but it is also how GitHub
+          # ends a run whose job hit its time limit or waited 24 hours for a
+          # runner (2026-10-14: microsoft/vscode 38516654837, and this fork's
+          # 31559040403, a failure only because another job failed too). The
+          # issue step tells the two apart by GitHub's annotation on the job.
+          # timed_out is documented but unseen, here and in ten large public
+          # repositories. Left out: action_required (a pull request run
+          # waiting for approval).
+          reportable='^(failure|startup_failure|timed_out|cancelled)$'
           if [[ "$EVENT" == "workflow_run" ]]; then
-            if [[ "$TRIGGER_CONCLUSION" != "failure" ]]; then
-              echo "The run succeeded, nothing to report."
+            if [[ ! "$TRIGGER_CONCLUSION" =~ $reportable ]]; then
+              echo "The run ended ${TRIGGER_CONCLUSION:-with no conclusion}, nothing to report."
               echo "runs=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -91,9 +106,12 @@ jobs:
             exit 0
           fi
 
-          # Backstop sweep: anything that failed in the last six hours except
-          # the self-reporting sync workflow and mirror-branch push runs (the
-          # blind spot from the header). Filtering happens in awk
+          # Backstop sweep: every run that ended in a reportable conclusion in
+          # the last six hours, except this workflow's own runs and the
+          # mirror-branch push runs (the blind spot from the header). The sync
+          # reports its own failures, but from a step of its job; a sync run
+          # that never started or was cut off had no such step, so only its
+          # plain failures are left to it. Filtering happens in awk
           # rather than inside --jq, because the shell would have to escape
           # nested quotes and jq's join() refuses an array of numbers anyway.
           #
@@ -106,12 +124,12 @@ jobs:
           since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
           runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name,headBranch,event \
             --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name, .headBranch, .event] | @tsv' \
-            | awk -v since="$since" -F'\t' '
-                $2 == "failure" && $3 > since &&
-                $4 != "sync with upstream" && $4 != "release watchdog" &&
+            | awk -v since="$since" -v reportable="$reportable" -F'\t' '
+                $2 ~ reportable && $3 > since && $4 != "release watchdog" &&
+                !($2 == "failure" && $4 == "sync with upstream") &&
                 !($5 == "master" && $6 == "push") { printf "%s ", $1 }')"
           echo "runs=${runs}" >> "$GITHUB_OUTPUT"
-          echo "Failed runs in the window: ${runs:-none}"
+          echo "Runs to look at in the window: ${runs:-none}"
 
       - name: Open an issue for each failure
         if: steps.collect.outputs.runs != ''
@@ -136,7 +154,16 @@ jobs:
               echo "::warning::Fetching run ${run_id} failed; the next sweep will retry it."
               continue
             }
-            name="$(jq -r '.name' <<<"$run_json")"
+            # A run GitHub could not start can come without a name (and with
+            # "BuildFailed" for a path), which would leave the title blank.
+            name="$(jq -r '.name // ""' <<<"$run_json")"
+            if [[ -n "$name" ]]; then
+              the_workflow="the **${name}** workflow"
+            else
+              name="unnamed workflow"
+              the_workflow="a workflow recorded without a name"
+            fi
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
             url="$(jq -r '.html_url' <<<"$run_json")"
             sha="$(jq -r '.head_sha' <<<"$run_json")"
             branch="$(jq -r '.head_branch' <<<"$run_json")"
@@ -168,12 +195,52 @@ jobs:
               continue
             fi
 
+            jobs_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100")" || {
+              echo "::warning::Fetching jobs for run ${run_id} failed; the next sweep will retry it."
+              continue
+            }
+
+            # A cancelled run is somebody's choice -- a person's, or a newer
+            # run's in a concurrency group -- unless GitHub cancelled a job
+            # itself for running out of time. Its annotation on that job says
+            # so ("The job has exceeded the maximum execution time of 6h0m0s",
+            # or "... while awaiting a runner for 24h0m0s"); a person's cancel
+            # reads "The run was canceled by @...". Only the former is filed.
+            timeouts=""
+            if [[ "$conclusion" == "cancelled" ]]; then
+              unread=""
+              while IFS=$'\t' read -r job_id job_name; do
+                [[ -n "$job_id" ]] || continue
+                if ! notes_json="$(gh api "repos/${GH_REPO}/check-runs/${job_id}/annotations?per_page=100")"; then
+                  unread=1
+                  continue
+                fi
+                note="$(jq -r '[.[]? | .message | strings | split("\n")[0] | select(test("exceeded the maximum execution time"))] | first // empty' \
+                  <<<"$notes_json" || true)"
+                if [[ -n "$note" ]]; then
+                  timeouts+="- \`${job_name}\`: ${note}"$'\n'
+                fi
+              done <<<"$(jq -r '.jobs[]? | select(.conclusion == "cancelled") | "\(.id)\t\(.name)"' <<<"$jobs_json" || true)"
+              if [[ -z "$timeouts" && -n "$unread" ]]; then
+                echo "::warning::Fetching annotations for run ${run_id} failed; the next sweep will retry it."
+                continue
+              fi
+              if [[ -z "$timeouts" ]]; then
+                echo "Run ${run_id} was cancelled by a person or a newer run, not by a timeout; nothing to report."
+                continue
+              fi
+            fi
+
             body_file="$(mktemp)"
             {
               if [[ "$event" == "pull_request" ]]; then
-                printf 'The **%s** workflow failed on a pull request run -- a check on incoming changes, not the release pipeline.\n\n' "$name"
+                printf '%s failed on a pull request run -- a check on incoming changes, not the release pipeline.\n\n' "${the_workflow^}"
+              elif [[ "$conclusion" == "startup_failure" ]]; then
+                printf 'GitHub could not start %s, so none of its jobs ran.\n\n' "$the_workflow"
+              elif [[ -n "$timeouts" ]]; then
+                printf '%s ran out of time, so this release was not published.\n\n' "${the_workflow^}"
               else
-                printf 'The **%s** workflow failed, so this release was not published.\n\n' "$name"
+                printf '%s failed, so this release was not published.\n\n' "${the_workflow^}"
               fi
               printf '| | |\n| --- | --- |\n'
               printf '| Run | [#%s](%s) |\n' "$run_id" "$url"
@@ -185,10 +252,6 @@ jobs:
               printf '\n## What failed\n\n'
             } > "$body_file"
 
-            jobs_json="$(gh api "repos/${GH_REPO}/actions/runs/${run_id}/jobs?per_page=100")" || {
-              echo "::warning::Fetching jobs for run ${run_id} failed; the next sweep will retry it."
-              continue
-            }
             jq -r '.jobs[]? | select(.conclusion == "failure") | "\(.id)\t\(.name)\t\(.html_url)"' <<<"$jobs_json" \
             | while IFS=$'\t' read -r job_id job_name job_url; do
                 printf '### [%s](%s)\n\n' "$job_name" "$job_url" >> "$body_file"
@@ -219,7 +282,26 @@ jobs:
             # issues (#27-#31). GitHub states its reason only on the run page
             # ("Internal server error" that time), not in the REST API, so
             # point there and show how far the run got.
-            if ! jq -e 'any(.jobs[]?; .conclusion == "failure")' <<<"$jobs_json" >/dev/null 2>&1; then
+            #
+            # A run GitHub could not start has no jobs at all, and its reason
+            # is on the run page only as well -- in one of two forms, both
+            # seen on public runs (2026-10-14), which call for opposite fixes.
+            if [[ "$conclusion" == "startup_failure" ]]; then
+              {
+                printf 'GitHub could not start this run (conclusion `startup_failure`): it has no jobs and no log, and the API does not return the reason. The run page linked above states it. '
+                printf '"Invalid workflow file" names the file and line GitHub rejected -- a reusable workflow it calls that was not found, for example. Every run of that workflow fails the same way until the file is fixed on `patches`, '
+                printf 'and a run at an existing tag reads the file from that tag, so such a tag cannot be rebuilt: the next release carries the fix. '
+                printf '"An unexpected error has occurred" is a GitHub fault at startup, which hit runs in other repositories on 2026-08-26 and 2026-10-07; once https://www.githubstatus.com shows no incident, run the workflow again -- a scheduled one runs again by itself.\n\n'
+              } >> "$body_file"
+            elif [[ -n "$timeouts" ]]; then
+              # GitHub's own cancel for time: the run reads cancelled, not
+              # failure, and no step of the job could report it.
+              {
+                printf 'GitHub cancelled this run itself: a job ran out of time, which ends a run as cancelled rather than failed. '
+                printf 'A job that waited 24 hours for a runner got none -- a retired runner label or an outage; a job stopped at its time limit hung or ran too slow.\n\n'
+                printf '%s\n' "$timeouts"
+              } >> "$body_file"
+            elif ! jq -e 'any(.jobs[]?; .conclusion == "failure")' <<<"$jobs_json" >/dev/null 2>&1; then
               job_list="$(jq -r '.jobs[]? | "- `\(.name)`: \(.conclusion // .status)"' <<<"$jobs_json" || true)"
               {
                 printf 'No job in this run failed, so no job log holds the reason. GitHub shows its own reason on the run page linked above (the outage of 2026-10-07 left "Internal server error" there). '
@@ -239,6 +321,41 @@ jobs:
             else
               {
                 printf '\n## What this means\n\n'
+                # Release builds are dispatched at their tag, and the run
+                # reports that tag as its branch. A push build of patches
+                # has no tag, so the placeholder stays.
+                tag='<tag>'
+                version_re='^[0-9]+(\.[0-9]+){3}$'
+                if [[ "$branch" =~ $version_re ]]; then
+                  tag="$branch"
+                fi
+                # build-all only dispatches the five platform builds, one step
+                # each, and its step name maps one to one onto the workflow
+                # file. A "Trigger build <platform>" step that did not succeed
+                # is a platform that most likely never started: failed is a
+                # refused dispatch, skipped or cancelled one the job never
+                # reached. A step that maps onto no known workflow file (a
+                # platform upstream adds later) is named rather than dropped.
+                # Should upstream rename the steps, nothing matches and the
+                # generic text stays.
+                refused_commands=""
+                refused_unknown=""
+                if [[ "$workflow_file" == "build-all.yml" ]]; then
+                  while IFS=$'\t' read -r step_name platform; do
+                    [[ -n "$step_name" ]] || continue
+                    case "$platform" in
+                      linux|osx|windows|windows-desktop|windows-x86)
+                        refused_commands+="gh workflow run build-${platform}.yml --repo ${GH_REPO} --ref refs/tags/${tag} --field release_tag=${tag}"$'\n'
+                        ;;
+                      *)
+                        refused_unknown+="${refused_unknown:+, }\`${step_name}\`"
+                        ;;
+                    esac
+                  done <<<"$(jq -r '.jobs[]?.steps[]? | select(.conclusion != "success") | .name | strings
+                      | select(startswith("Trigger build "))
+                      | "\(.)\t\(ltrimstr("Trigger build ") | ascii_downcase | gsub(" +"; "-"))"' \
+                    <<<"$jobs_json" || true)"
+                fi
                 # The command names the workflow that failed: it used to say
                 # build-linux.yml whatever had failed, so pasting it rebuilt
                 # the wrong platform.
@@ -247,14 +364,6 @@ jobs:
                   # dispatches them, and dispatching it again would rebuild
                   # every platform on top of builds it has already started.
                   build-linux.yml|build-osx.yml|build-windows.yml|build-windows-desktop.yml|build-windows-x86.yml)
-                    # Release builds are dispatched at their tag, and the run
-                    # reports that tag as its branch. A push build of patches
-                    # has no tag, so the placeholder stays.
-                    tag='<tag>'
-                    version_re='^[0-9]+(\.[0-9]+){3}$'
-                    if [[ "$branch" =~ $version_re ]]; then
-                      tag="$branch"
-                    fi
                     printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
                     printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
                     printf 'If a newer full release has shipped since, the tag is superseded: close this issue rather than rebuild it. '
@@ -264,11 +373,31 @@ jobs:
                       "$workflow_file" "$GH_REPO" "$tag" "$tag"
                     ;;
                   *)
-                    # No command here on purpose: a re-run is wrong for some of
-                    # these (auto release re-run after it created the tag finds
-                    # nothing new and never starts the builds).
-                    printf 'This run is not one of the platform builds, so no rebuild command applies. '
-                    printf 'The sections above show how far it got; check what it left behind (a tag, a prerelease, a promotion) before running it again.\n\n'
+                    if [[ -n "$refused_commands" || -n "$refused_unknown" ]]; then
+                      printf 'The platform builds below were not dispatched -- GitHub refused them, or the job stopped before their step -- so they most likely never started and their assets are missing from the release. '
+                      printf 'The platforms dispatched successfully need nothing, and running this workflow again would build those twice.\n\n'
+                      printf 'If a newer full release has shipped since, the tag is superseded: close this issue rather than rebuild it. '
+                      printf 'Otherwise list what already runs at the tag first -- a server error or a timeout can hide a dispatch that did start a build:\n\n'
+                      printf '```bash\ngh run list --repo %s --branch %s\n```\n\n' "$GH_REPO" "$tag"
+                      if [[ -n "$refused_commands" ]]; then
+                        printf 'Then start each platform below that is missing from that list, at the tag:\n\n'
+                        printf '```bash\n%s```\n\n' "$refused_commands"
+                      fi
+                      if [[ -n "$refused_unknown" ]]; then
+                        printf 'Not dispatched, and with no workflow file known to this watchdog: %s. Start each of those workflows at the tag by hand.\n\n' "$refused_unknown"
+                      fi
+                    elif [[ "$workflow_file" != *.yml && "$workflow_file" != *.yaml ]]; then
+                      # A run GitHub could not start may not say which workflow
+                      # it was, and a malformed path says nothing either.
+                      printf 'GitHub did not record which workflow this run belongs to, so no rebuild command applies. '
+                      printf 'Check what the workflows of this commit left behind (a tag, a prerelease, a promotion) before running any of them again.\n\n'
+                    else
+                      # No command here on purpose: a re-run is wrong for some
+                      # of these (auto release re-run after it created the tag
+                      # finds nothing new and never starts the builds).
+                      printf 'This run is not one of the platform builds, so no rebuild command applies. '
+                      printf 'The sections above show how far it got; check what it left behind (a tag, a prerelease, a promotion) before running it again.\n\n'
+                    fi
                     ;;
                 esac
                 printf 'Close this issue once the release completes.\n'
