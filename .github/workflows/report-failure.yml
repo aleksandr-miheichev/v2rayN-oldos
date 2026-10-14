@@ -107,7 +107,7 @@ jobs:
           fi
 
           # Backstop sweep: every run that ended in a reportable conclusion in
-          # the last six hours, except this workflow's own runs and the
+          # the last 24 hours, except this workflow's own runs and the
           # mirror-branch push runs (the blind spot from the header). The sync
           # reports its own failures, but from a step of its job; a sync run
           # that never started or was cut off had no such step, so only its
@@ -121,8 +121,15 @@ jobs:
           # failed its creation date had left the window. Completion events for
           # token-dispatched runs are also never delivered (GitHub recursion
           # prevention), so this sweep was its only chance -- and missed.
-          since="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-          runs="$(gh run list --limit 150 --json databaseId,conclusion,updatedAt,name,headBranch,event \
+          #
+          # 24 hours, not 6: the schedule asks for two sweeps an hour, GitHub
+          # fires about eight a day, and 36 of the gaps between them exceeded
+          # six hours (up to 11h46m, 2026-08-21 to 2026-10-14). A failure early
+          # in such a gap would age out before any sweep saw it. The limit covers
+          # the busiest 48 hours so far (427 runs), for a run that completes
+          # long after it was created.
+          since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          runs="$(gh run list --limit 500 --json databaseId,conclusion,updatedAt,name,headBranch,event \
             --jq '.[] | [.databaseId, .conclusion, .updatedAt, .name, .headBranch, .event] | @tsv' \
             | awk -v since="$since" -v reportable="$reportable" -F'\t' '
                 $2 ~ reportable && $3 > since && $4 != "release watchdog" &&
@@ -145,8 +152,21 @@ jobs:
           gh label create pr-check-failure --color FBCA04 \
             --description "A pull request check failed" 2>/dev/null || true
 
+          # Every issue, read once. The duplicate check below must see the
+          # issue of every run still in the 24-hour window, and a lasting
+          # breakage can file more than a short list holds: with only the
+          # newest 60, each sweep would file every run again once the window
+          # held more than 60 failures (found by an adversarial run,
+          # 2026-10-14). Without the list nothing can be ruled out, so fail
+          # loudly rather than file the window twice; the next sweep retries.
+          if ! issues_json="$(gh issue list --state all --limit 1000 --json number,title)" \
+             || ! jq -e 'type == "array"' <<<"$issues_json" > /dev/null; then
+            echo "::error::Listing the issues failed, so no run can be checked for an existing issue; the next sweep will retry them all."
+            exit 1
+          fi
+
           # One run's bad API answer must not silence the rest of the list:
-          # skip it loudly and let the next sweep retry it (the six-hour
+          # skip it loudly and let the next sweep retry it (the 24-hour
           # window keeps it eligible). A silenced real failure is the one
           # unacceptable outcome for a watchdog.
           for run_id in $RUNS; do
@@ -188,9 +208,9 @@ jobs:
             fi
 
             # Idempotent across both triggers and across repeated sweeps.
-            existing="$(gh issue list --state all --label "$label" --limit 60 \
-              --json number,title --jq "[ .[] | select(.title | contains(\"(run #${run_id})\")) | .number ][0]" || true)"
-            if [[ -n "$existing" && "$existing" != "null" ]]; then
+            existing="$(jq -r --arg key "(run #${run_id})" \
+              '[.[] | select((.title // "") | contains($key)) | .number][0] // empty' <<<"$issues_json")"
+            if [[ -n "$existing" ]]; then
               echo "Run ${run_id} is already reported in issue #${existing}."
               continue
             fi
