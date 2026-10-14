@@ -141,6 +141,10 @@ jobs:
             sha="$(jq -r '.head_sha' <<<"$run_json")"
             branch="$(jq -r '.head_branch' <<<"$run_json")"
             event="$(jq -r '.event' <<<"$run_json")"
+            # `strings`: split() on a non-string path would abort the loop.
+            workflow_file="$(jq -r '((.path | strings) // "") | split("/") | last // ""' <<<"$run_json")"
+            started="$(jq -r '.run_started_at // .created_at' <<<"$run_json")"
+            finished="$(jq -r '.updated_at' <<<"$run_json")"
 
             # The sweep catches pull_request runs too: Dependabot's weekly
             # bump fires Code Test and the ABI gate, and a red check on a
@@ -208,6 +212,23 @@ jobs:
                 fi
               done
 
+            # A run can fail without a single failed job, and the loop above
+            # then prints nothing. The Actions incident of 2026-10-07 did that
+            # to every build of 7.25.5.2 -- the builds passed, the jobs due
+            # next were never created -- and left this section empty in five
+            # issues (#27-#31). GitHub states its reason only on the run page
+            # ("Internal server error" that time), not in the REST API, so
+            # point there and show how far the run got.
+            if ! jq -e 'any(.jobs[]?; .conclusion == "failure")' <<<"$jobs_json" >/dev/null 2>&1; then
+              job_list="$(jq -r '.jobs[]? | "- `\(.name)`: \(.conclusion // .status)"' <<<"$jobs_json" || true)"
+              {
+                printf 'No job in this run failed, so no job log holds the reason. GitHub shows its own reason on the run page linked above (the outage of 2026-10-07 left "Internal server error" there). '
+                printf 'If the list below shows a cancelled job, a timeout, the 24-hour queue limit or a manual cancel stopped it. '
+                printf 'For a GitHub error, look in https://www.githubstatus.com/history for an incident whose text covers %s to %s -- incidents are often opened after the impact.\n\n' "$started" "$finished"
+                printf 'Jobs as GitHub recorded them:\n\n%s\n\n' "${job_list:-_none_}"
+              } >> "$body_file"
+            fi
+
             if [[ "$event" == "pull_request" ]]; then
               {
                 printf '\n## What this means\n\n'
@@ -218,12 +239,38 @@ jobs:
             else
               {
                 printf '\n## What this means\n\n'
-                printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
-                printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
-                printf 'If the cause was transient, re-run the pipeline for the existing tag. '
-                printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
-                printf '```bash\ngh workflow run build-linux.yml --repo %s --ref refs/tags/<tag> --field release_tag=<tag>\n```\n\n' \
-                  "$GH_REPO"
+                # The command names the workflow that failed: it used to say
+                # build-linux.yml whatever had failed, so pasting it rebuilt
+                # the wrong platform.
+                case "$workflow_file" in
+                  # The five platform builds only: build-all.yml merely
+                  # dispatches them, and dispatching it again would rebuild
+                  # every platform on top of builds it has already started.
+                  build-linux.yml|build-osx.yml|build-windows.yml|build-windows-desktop.yml|build-windows-x86.yml)
+                    # Release builds are dispatched at their tag, and the run
+                    # reports that tag as its branch. A push build of patches
+                    # has no tag, so the placeholder stays.
+                    tag='<tag>'
+                    version_re='^[0-9]+(\.[0-9]+){3}$'
+                    if [[ "$branch" =~ $version_re ]]; then
+                      tag="$branch"
+                    fi
+                    printf 'No artifact was uploaded for the affected platform: the release gate runs before the upload, '
+                    printf 'so a failure here leaves the release incomplete rather than publishing something broken.\n\n'
+                    printf 'If a newer full release has shipped since, the tag is superseded: close this issue rather than rebuild it. '
+                    printf 'Otherwise, if the cause was transient, re-run the pipeline for the existing tag. '
+                    printf 'Dispatch at the TAG, never at the branch: the branch is rebased hourly and may already contain code the release never claimed.\n\n'
+                    printf '```bash\ngh workflow run %s --repo %s --ref refs/tags/%s --field release_tag=%s\n```\n\n' \
+                      "$workflow_file" "$GH_REPO" "$tag" "$tag"
+                    ;;
+                  *)
+                    # No command here on purpose: a re-run is wrong for some of
+                    # these (auto release re-run after it created the tag finds
+                    # nothing new and never starts the builds).
+                    printf 'This run is not one of the platform builds, so no rebuild command applies. '
+                    printf 'The sections above show how far it got; check what it left behind (a tag, a prerelease, a promotion) before running it again.\n\n'
+                    ;;
+                esac
                 printf 'Close this issue once the release completes.\n'
               } >> "$body_file"
             fi
