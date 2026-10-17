@@ -1,0 +1,34 @@
+# Every artifact a complete release of this fork must carry.
+#
+# finalize-release.yml promotes a prerelease to the latest release only once
+# all of these are present. Completeness is the direct signal; waiting for
+# uploads to go quiet was an indirect one and stalled whenever any job was
+# re-run.
+#
+# Signature files are not listed, but they are still required: the artifact
+# and its .sig are uploaded by two different steps, so finalize-release.yml
+# demands <name>.sig for every entry here except manifest.json and the key.
+#
+# LoongArch and riscv64 are deliberately absent -- this fork does not build them.
+
+manifest.json
+v2rayN-public-key.asc
+
+v2rayN-linux-64.deb
+v2rayN-linux-arm64.deb
+v2rayN-linux-rhel-64.rpm
+v2rayN-linux-rhel-arm64.rpm
+v2rayN-linux-64.zip
+v2rayN-linux-arm64.zip
+
+v2rayN-macos-64.dmg
+v2rayN-macos-arm64.dmg
+v2rayN-macos-64.zip
+v2rayN-macos-arm64.zip
+
+v2rayN-windows-64.zip
+v2rayN-windows-arm64.zip
+v2rayN-windows-86.zip
+v2rayN-windows-64-desktop.zip
+v2rayN-windows-arm64-desktop.zip
+v2rayN-windows-86-desktop.zip
