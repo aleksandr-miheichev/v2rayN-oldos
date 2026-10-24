@@ -46,7 +46,9 @@ On macOS, open the `.dmg` and drag the application to Applications; the build is
 launch either right-click → Open, or clear the quarantine flag: `xattr -rd com.apple.quarantine /Applications/v2rayN.app`.
 On Windows, unpack the zip anywhere and run `v2rayN.exe`.
 
-**What is not built here.** LoongArch and RISC-V packages. Everything else upstream publishes is published here.
+**What is not built here.** LoongArch, RISC-V and headless WebAPI packages. Desktop packages for the other
+upstream targets are published here. WebAPI release support is deferred until its versioning and compatibility
+checks are adapted to this fork.
 
 **Verifying a download.** Each file has a `.sig` beside it, and every release includes `v2rayN-public-key.asc`:
 
