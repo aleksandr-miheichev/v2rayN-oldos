@@ -32,3 +32,14 @@ v2rayN-windows-86.zip
 v2rayN-windows-64-desktop.zip
 v2rayN-windows-arm64-desktop.zip
 v2rayN-windows-86-desktop.zip
+
+# Headless WebAPI full installs, app-only updates and signed update manifest.
+v2rayN-linux-64-WebAPI.zip
+v2rayN-linux-64-WebAPI-update.zip
+v2rayN-linux-arm64-WebAPI.zip
+v2rayN-linux-arm64-WebAPI-update.zip
+v2rayN-windows-64-WebAPI.zip
+v2rayN-windows-64-WebAPI-update.zip
+v2rayN-windows-arm64-WebAPI.zip
+v2rayN-windows-arm64-WebAPI-update.zip
+WebAPI-update.json
