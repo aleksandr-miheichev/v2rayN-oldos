@@ -27,6 +27,7 @@ on:
       - release Windows
       - release Windows desktop (Avalonia UI)
       - release Windows x86
+      - release v2rayN.WebAPI
     types: [ completed ]
   schedule:
     - cron: '11,41 * * * *'
@@ -126,6 +127,20 @@ jobs:
             exit 0
           fi
 
+          # Artifact requirements belong to the immutable release source. A new
+          # WebAPI contract must not retroactively change older releases.
+          expected_assets="$(mktemp)"
+          trap 'rm -f "$expected_assets"' EXIT
+          if ! git fetch --quiet --no-tags --depth=1 origin "refs/tags/${tag}" \
+             || ! git show FETCH_HEAD:scripts/fork/expected-release-assets.txt > "$expected_assets"; then
+            echo "::error::Could not read the asset contract from release tag ${tag}."
+            exit 1
+          fi
+          if ! grep -qEv '^[[:space:]]*(#|$)' "$expected_assets"; then
+            echo "::error::The asset contract for ${tag} is empty."
+            exit 1
+          fi
+
           assets="$(gh release view "$tag" --json assets --jq '.assets')"
 
           # Completeness is judged by the artifacts themselves. Waiting for
@@ -148,7 +163,7 @@ jobs:
                 *) jq -e --arg n "${want}.sig" 'any(.[]; .name == $n)' <<<"$assets_json" >/dev/null 2>&1 \
                      || out+=("${want}.sig") ;;
               esac
-            done < scripts/fork/expected-release-assets.txt
+            done < "$expected_assets"
             printf '%s\n' "${out[@]:-}"
           }
 

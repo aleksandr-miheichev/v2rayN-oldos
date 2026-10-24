@@ -1,8 +1,9 @@
 ARG RID=linux-x64
 ARG WEB_VERSION=0.0.0-dev
+ARG FORK_VERSION=
 ARG WEB_COMMIT=unknown
 ARG WEB_BUILD_DATE=unknown
-ARG WEB_REPOSITORY=2dust/v2rayN
+ARG WEB_REPOSITORY=aleksandr-miheichev/v2rayN-oldos
 
 FROM --platform=$BUILDPLATFORM docker.io/library/alpine:3.22 AS core-assets
 ARG RID
@@ -13,6 +14,7 @@ RUN sh /usr/local/bin/fetch-core-bundle "$RID" /out/bin
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
 ARG RID
 ARG WEB_VERSION
+ARG FORK_VERSION
 ARG WEB_COMMIT
 ARG WEB_BUILD_DATE
 ARG WEB_REPOSITORY
@@ -25,6 +27,7 @@ RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.WebAPI/v2ra
     -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true \
     -p:WebVersion="$WEB_VERSION" \
+    -p:FORK_VERSION="$FORK_VERSION" \
     -p:WebCommit="$WEB_COMMIT" \
     -p:WebBuildDate="$WEB_BUILD_DATE" \
     -p:WebRepository="$WEB_REPOSITORY" \
