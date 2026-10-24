@@ -1,0 +1,44 @@
+name: verify WebAPI compatibility with older systems
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  startup:
+    name: packaged WebAPI startup and native ABI on ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'debian:12', 'rockylinux:9']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install runtime and verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates git curl unzip python3 binutils procps libicu-dev libssl-dev libstdc++6 zlib1g
+          else
+            dnf -y install ca-certificates git unzip python3 binutils procps-ng libicu openssl-libs libstdc++ zlib findutils
+            command -v curl >/dev/null || dnf -y install curl
+          fi
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: WebAPI-release-packages
+          path: dist
+      - name: Verify real full-install startup and every visible native ELF
+        shell: bash
+        env:
+          WEBAPI_EXPECTED_RID: linux-x64
+          WEBAPI_GLIBC_BASELINE: '2.34'
+        run: bash v2rayN/v2rayN.WebAPI/Tests/Integration/test-full-zip-runtime.sh dist/v2rayN-linux-64-WebAPI.zip

@@ -8,6 +8,51 @@ asset_tool="$web_root/Scripts/web-release-assets.py"
 temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
+# Exercise the native publish wrapper without compiling: the build boundary records its
+# arguments and emits only the executable needed by the wrapper's postcondition.
+cat > "$temporary/dotnet-fixture" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "${PUBLISH_TEST_LOG:?}"
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == --output ]]; then output="$2"; break; fi
+  shift
+done
+mkdir -p "${output:?}"
+printf '#!/bin/sh\nexit 0\n' > "$output/v2rayN.WebAPI"
+chmod 755 "$output/v2rayN.WebAPI"
+SH
+chmod 755 "$temporary/dotnet-fixture"
+for version in 7.25.3 7.25.3.2 0.0.0-dev 7.25.3.2-dev.1; do
+  env -u GITHUB_REPOSITORY -u V2RAYN_WEB_REPOSITORY \
+    DOTNET="$temporary/dotnet-fixture" PUBLISH_TEST_LOG="$temporary/publish-arguments" \
+    V2RAYN_WEB_VERSION="$version" V2RAYN_WEB_COMMIT=0123456789abcdef \
+    V2RAYN_WEB_BUILD_DATE=2026-09-28T00:00:00Z \
+    bash "$web_root/Scripts/publish-native.sh" linux-x64 "$temporary/native-$version"
+  python3 - "$temporary/native-$version/v2rayN.WebAPI.build.json" "$temporary/publish-arguments" "$version" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+identity = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+arguments = Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+assert identity["version"] == sys.argv[3], identity
+assert f"-p:WebVersion={sys.argv[3]}" in arguments, arguments
+assert "-p:WebRepository=aleksandr-miheichev/v2rayN-oldos" in arguments, arguments
+PY
+done
+for version in 07.25.3 7.025.3 7.25.03 7.25.3.02 7.25.3.2.1 v7.25.3.2; do
+  rm -f "$temporary/publish-arguments"
+  if env DOTNET="$temporary/dotnet-fixture" PUBLISH_TEST_LOG="$temporary/publish-arguments" \
+    V2RAYN_WEB_VERSION="$version" bash "$web_root/Scripts/publish-native.sh" linux-x64 "$temporary/invalid-native" \
+    2>"$temporary/invalid-native.log"; then
+    echo "Expected the native publish version $version to be rejected" >&2
+    exit 1
+  fi
+  grep -q 'Invalid Web version identity:' "$temporary/invalid-native.log"
+  test ! -e "$temporary/publish-arguments"
+done
+
 make_publish_fixture() {
   local rid="$1"
   local publish="$temporary/publish-$rid"
@@ -73,7 +118,7 @@ path, rid = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as handle:
     json.dump({
         "product": "v2rayN.WebAPI",
-        "version": "7.25.3",
+        "version": "7.25.3.2",
         "commit": "0123456789abcdef",
         "buildDate": "2026-09-28T00:00:00Z",
         "rid": rid,
@@ -82,37 +127,28 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 }
 
-for rid in linux-x64 linux-arm64 linux-riscv64 linux-loongarch64 win-x64 win-arm64; do
+for rid in linux-x64 linux-arm64 win-x64 win-arm64; do
   make_publish_fixture "$rid"
   python3 "$asset_tool" package --rid "$rid" --publish "$temporary/publish-$rid" --dist "$temporary/dist"
 done
 
 full_x64="$(python3 "$asset_tool" get --rid linux-x64 --field full)"
 full_arm64="$(python3 "$asset_tool" get --rid linux-arm64 --field full)"
-full_riscv64="$(python3 "$asset_tool" get --rid linux-riscv64 --field full)"
-full_loong64="$(python3 "$asset_tool" get --rid linux-loongarch64 --field full)"
 update_x64="$(python3 "$asset_tool" get --rid linux-x64 --field update)"
 update_arm64="$(python3 "$asset_tool" get --rid linux-arm64 --field update)"
-update_riscv64="$(python3 "$asset_tool" get --rid linux-riscv64 --field update)"
-update_loong64="$(python3 "$asset_tool" get --rid linux-loongarch64 --field update)"
 full_windows="$(python3 "$asset_tool" get --rid win-x64 --field full)"
 update_windows="$(python3 "$asset_tool" get --rid win-x64 --field update)"
 full_windows_arm64="$(python3 "$asset_tool" get --rid win-arm64 --field full)"
 update_windows_arm64="$(python3 "$asset_tool" get --rid win-arm64 --field update)"
 
-for asset in "$full_x64" "$full_arm64" "$full_riscv64" "$full_loong64" \
-  "$update_x64" "$update_arm64" "$update_riscv64" "$update_loong64" \
+for asset in "$full_x64" "$full_arm64" "$update_x64" "$update_arm64" \
   "$full_windows" "$update_windows" "$full_windows_arm64" "$update_windows_arm64"; do
   test -s "$temporary/dist/$asset"
 done
 test "$full_x64" = "v2rayN-linux-64-WebAPI.zip"
 test "$full_arm64" = "v2rayN-linux-arm64-WebAPI.zip"
-test "$full_riscv64" = "v2rayN-linux-riscv64-WebAPI.zip"
-test "$full_loong64" = "v2rayN-linux-loong64-WebAPI.zip"
 test "$update_x64" = "v2rayN-linux-64-WebAPI-update.zip"
 test "$update_arm64" = "v2rayN-linux-arm64-WebAPI-update.zip"
-test "$update_riscv64" = "v2rayN-linux-riscv64-WebAPI-update.zip"
-test "$update_loong64" = "v2rayN-linux-loong64-WebAPI-update.zip"
 test "$full_windows" = "v2rayN-windows-64-WebAPI.zip"
 test "$update_windows" = "v2rayN-windows-64-WebAPI-update.zip"
 test "$full_windows_arm64" = "v2rayN-windows-arm64-WebAPI.zip"
@@ -160,8 +196,8 @@ print("ZIP boundary assertions passed")
 PY
 
 python3 "$web_root/Scripts/web-update-manifest.py" write \
-  --version 7.25.3 \
-  --repository 2dust/v2rayN \
+  --version 7.25.3.2 \
+  --repository aleksandr-miheichev/v2rayN-oldos \
   --commit 0123456789abcdef \
   --build-date 2026-09-28T00:00:00Z \
   --dist "$temporary/dist" \
@@ -169,36 +205,34 @@ python3 "$web_root/Scripts/web-update-manifest.py" write \
 python3 "$web_root/Scripts/web-update-manifest.py" verify \
   --manifest "$temporary/dist/WebAPI-update.json" \
   --dist "$temporary/dist" \
-  --repository 2dust/v2rayN \
-  --version 7.25.3
+  --repository aleksandr-miheichev/v2rayN-oldos \
+  --version 7.25.3.2
 
 if python3 "$web_root/Scripts/web-update-manifest.py" verify \
   --manifest "$temporary/dist/WebAPI-update.json" \
   --dist "$temporary/dist" \
-  --repository 2dust/v2rayN \
-  --version 7.25.4 2>/dev/null; then
+  --repository aleksandr-miheichev/v2rayN-oldos \
+  --version 7.25.3.3 2>/dev/null; then
   echo "Expected the wrong requested release version to be rejected" >&2
   exit 1
 fi
 
-python3 - "$temporary/dist/WebAPI-update.json" "$update_x64" "$update_arm64" "$update_riscv64" "$update_loong64" "$update_windows" "$update_windows_arm64" <<'PY'
+python3 - "$temporary/dist/WebAPI-update.json" "$update_x64" "$update_arm64" "$update_windows" "$update_windows_arm64" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
-asset_x64, asset_arm64, asset_riscv64, asset_loong64, asset_windows, asset_windows_arm64 = sys.argv[2:]
+asset_x64, asset_arm64, asset_windows, asset_windows_arm64 = sys.argv[2:]
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 assert manifest["product"] == "v2rayN.WebAPI", manifest
-assert manifest["version"] == "7.25.3", manifest
+assert manifest["version"] == "7.25.3.2", manifest
 assert manifest["commit"] == "0123456789abcdef", manifest
 assert manifest["buildDate"] == "2026-09-28T00:00:00Z", manifest
 expected = {
     "linux-x64": asset_x64,
     "linux-arm64": asset_arm64,
-    "linux-riscv64": asset_riscv64,
-    "linux-loongarch64": asset_loong64,
     "win-x64": asset_windows,
     "win-arm64": asset_windows_arm64,
 }
@@ -206,7 +240,7 @@ packages = {package["rid"]: package for package in manifest["packages"]}
 assert set(packages) == set(expected), packages
 for rid, asset in expected.items():
     package = packages[rid]
-    url = f"https://github.com/2dust/v2rayN/releases/download/7.25.3/{asset}"
+    url = f"https://github.com/aleksandr-miheichev/v2rayN-oldos/releases/download/7.25.3.2/{asset}"
     assert asset.endswith("-WebAPI-update.zip"), asset
     assert package["asset"] == asset, package
     assert package["url"] == url, package
@@ -216,18 +250,67 @@ for rid, asset in expected.items():
 print("WebAPI-update.json assertions passed")
 PY
 
-# A dev identity must never become a release manifest.
-if python3 "$web_root/Scripts/web-update-manifest.py" write \
-  --version 7.25.3-dev \
-  --repository 2dust/v2rayN \
-  --commit 0123456789abcdef \
-  --build-date 2026-09-28T00:00:00Z \
-  --dist "$temporary/dist" \
-  --output "$temporary/dev-update.json" 2>/dev/null; then
-  echo "Expected the dev identity manifest to be rejected" >&2
+# Development, prefixed, noncanonical and five-part identities must never become release manifests.
+for version in 7.25.3-dev 7.25.3.2-dev 07.25.3 7.025.3 7.25.03 7.25.3.02 v7.25.3.2 7.25.3.2.1; do
+  if python3 "$web_root/Scripts/web-update-manifest.py" write \
+    --version "$version" \
+    --repository aleksandr-miheichev/v2rayN-oldos \
+    --commit 0123456789abcdef \
+    --build-date 2026-09-28T00:00:00Z \
+    --dist "$temporary/dist" \
+    --output "$temporary/invalid-update.json" 2>"$temporary/invalid-update.log"; then
+    echo "Expected the release identity $version to be rejected" >&2
+    exit 1
+  fi
+  grep -q 'release versions must be' "$temporary/invalid-update.log"
+  test ! -e "$temporary/invalid-update.json"
+done
+
+# A valid four-part manifest still belongs to exactly one release repository.
+python3 - "$temporary/dist/WebAPI-update.json" "$temporary/foreign-update.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+manifest["packages"][0]["url"] = manifest["packages"][0]["url"].replace(
+    "aleksandr-miheichev/v2rayN-oldos", "foreign-owner/v2rayN-oldos")
+Path(sys.argv[2]).write_text(json.dumps(manifest), encoding="utf-8")
+PY
+if python3 "$web_root/Scripts/web-update-manifest.py" verify \
+  --manifest "$temporary/foreign-update.json" --dist "$temporary/dist" \
+  --repository aleksandr-miheichev/v2rayN-oldos 2>"$temporary/foreign-update.log"; then
+  echo "Expected the foreign repository asset URL to be rejected" >&2
   exit 1
 fi
-test ! -e "$temporary/dev-update.json"
+grep -q 'asset URL does not use repository' "$temporary/foreign-update.log"
+
+# Keep the upstream three-part contract working alongside fork four-part releases.
+python3 - "$temporary/dist" "$temporary/three-part" <<'PY'
+import json
+from pathlib import Path
+import sys
+import zipfile
+
+source, destination = map(Path, sys.argv[1:])
+destination.mkdir()
+for path in source.glob("*.zip"):
+    with zipfile.ZipFile(path) as archive, zipfile.ZipFile(destination / path.name, "w") as output:
+        for info in archive.infolist():
+            data = archive.read(info)
+            if info.filename == "v2rayN.WebAPI.build.json":
+                identity = json.loads(data)
+                identity["version"] = "7.25.3"
+                data = json.dumps(identity).encode("utf-8")
+            output.writestr(info, data)
+PY
+python3 "$web_root/Scripts/web-update-manifest.py" write \
+  --version 7.25.3 --repository aleksandr-miheichev/v2rayN-oldos \
+  --commit 0123456789abcdef --build-date 2026-09-28T00:00:00Z \
+  --dist "$temporary/three-part" --output "$temporary/three-part/WebAPI-update.json"
+python3 "$web_root/Scripts/web-update-manifest.py" verify \
+  --manifest "$temporary/three-part/WebAPI-update.json" --dist "$temporary/three-part" \
+  --repository aleksandr-miheichev/v2rayN-oldos --version 7.25.3
 
 # A tampered asset must fail SHA-256 verification.
 cp -a "$temporary/dist" "$temporary/tampered"
@@ -236,7 +319,7 @@ cp -a "$temporary/dist/WebAPI-update.json" "$temporary/tampered/WebAPI-update.js
 if python3 "$web_root/Scripts/web-update-manifest.py" verify \
   --manifest "$temporary/tampered/WebAPI-update.json" \
   --dist "$temporary/tampered" \
-  --repository 2dust/v2rayN 2>/dev/null; then
+  --repository aleksandr-miheichev/v2rayN-oldos 2>/dev/null; then
   echo "Expected the tampered manifest to be rejected" >&2
   exit 1
 fi
@@ -309,7 +392,7 @@ def appended(name, data, symlink=False):
     return transform
 
 
-write_variant("version", identity_transform(field="version", value="7.25.4"))
+write_variant("version", identity_transform(field="version", value="7.25.3.3"))
 write_variant("commit", identity_transform(field="commit", value="ffffffffffffffff"))
 write_variant("build-date", identity_transform(field="buildDate", value="2026-09-29T00:00:00Z"))
 write_variant("rid", identity_transform(field="rid", value="linux-arm64"))
@@ -326,8 +409,8 @@ for variant in \
   version commit build-date rid missing-identity invalid-json \
   embedded-bin symlink duplicate traversal; do
   if python3 "$web_root/Scripts/web-update-manifest.py" write \
-    --version 7.25.3 \
-    --repository 2dust/v2rayN \
+    --version 7.25.3.2 \
+    --repository aleksandr-miheichev/v2rayN-oldos \
     --commit 0123456789abcdef \
     --build-date 2026-09-28T00:00:00Z \
     --dist "$temporary/identity-tamper/$variant" \

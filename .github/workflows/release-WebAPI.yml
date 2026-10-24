@@ -8,23 +8,42 @@ on:
         type: string
     secrets:
       GPG_PRIVATE_KEY:
-        required: false
+        required: true
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (for example 7.x.y).'
+        description: 'Fork release tag (for example 7.x.y.1); run this workflow on that tag.'
         required: true
         type: string
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
+  source:
+    name: Verify the immutable release source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate release source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF_TYPE" != tag || "$RELEASE_REF_NAME" != "$RELEASE_TAG" ]]; then
+            echo "Release builds must run on the matching immutable tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
   build:
+    needs: source
     uses: ./.github/workflows/build-WebAPI.yml
     permissions:
       contents: read
+      actions: read
     with:
       release_tag: ${{ inputs.release_tag }}
 
@@ -39,6 +58,18 @@ jobs:
       artifact_name: WebAPI-release-packages
       file_pattern: 'v2rayN-*-WebAPI*.zip'
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
+
+  nudge-finalize:
+    name: Ask the finalizer to verify this completed release
+    needs: [release-web-packages, release-web-manifest]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch finalize-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh workflow run finalize-release.yml --ref oldos --field "tag=$RELEASE_TAG"
 
   release-web-manifest:
     name: sign and upload Web update manifest
