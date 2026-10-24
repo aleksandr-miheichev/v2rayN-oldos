@@ -87,6 +87,40 @@ public class WebUpdateReleaseSelectionTests
     }
 
     [Test]
+    public async Task ForkReleaseDiscoveryOrdersNumericRevisionsAndRejectsMalformedTags()
+    {
+        var index = JsonSerializer.Serialize(new[]
+        {
+            "7.25.3.9", "7.25.3.10", "7.25.3.010", "7.25.3.1.1", "v7.25.3.11", "7.25.3.12-dev",
+        }.Select(tag => new
+        {
+            tag_name = tag,
+            draft = false,
+            prerelease = false,
+            assets = new[]
+            {
+                new
+                {
+                    name = "WebAPI-update.json",
+                    browser_download_url = $"https://github.com/aleksandr-miheichev/v2rayN-oldos/releases/download/{tag}/WebAPI-update.json",
+                    size = 512,
+                },
+            },
+        }));
+        var candidates = V2rayRuntime.ParseWebReleaseCandidates(index, allowPrerelease: false);
+        candidates.Sort((left, right) => new ServiceLib.Models.Dto.SemanticVersion(right.Version)
+            .CompareTo(new ServiceLib.Models.Dto.SemanticVersion(left.Version)));
+
+        await candidates.Count.Should().BeEqualTo(2);
+        await candidates[0].Version.Should().BeEqualTo("7.25.3.10");
+        await candidates[1].Version.Should().BeEqualTo("7.25.3.9");
+        await WebReleaseChannel.IsTrustedAssetUrl(candidates[0].ManifestUrl,
+            "aleksandr-miheichev/v2rayN-oldos", "7.25.3.10", "WebAPI-update.json").Should().BeTrue();
+        await WebReleaseChannel.IsTrustedAssetUrl(candidates[0].ManifestUrl,
+            "2dust/v2rayN", "7.25.3.10", "WebAPI-update.json").Should().BeFalse();
+    }
+
+    [Test]
     public async Task InvalidReleaseIndexesAreRejected()
     {
         var malformedRejected = false;

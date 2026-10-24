@@ -8,9 +8,10 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <DefaultItemExcludes>$(DefaultItemExcludes);.NET/**;.packages/**;Tests/**;TestResults/**;publish/**</DefaultItemExcludes>
     <WebVersion Condition="'$(WebVersion)' == ''">0.0.0-dev</WebVersion>
+    <Version>$(WebVersion)</Version>
     <WebCommit Condition="'$(WebCommit)' == ''">unknown</WebCommit>
     <WebBuildDate Condition="'$(WebBuildDate)' == ''">unknown</WebBuildDate>
-    <WebRepository Condition="'$(WebRepository)' == ''">2dust/v2rayN</WebRepository>
+    <WebRepository Condition="'$(WebRepository)' == ''">aleksandr-miheichev/v2rayN-oldos</WebRepository>
   </PropertyGroup>
 
   <ItemGroup>
