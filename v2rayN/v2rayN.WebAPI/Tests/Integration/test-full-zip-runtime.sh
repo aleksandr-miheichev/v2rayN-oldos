@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+web_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo_root="$(cd -- "$web_root/../.." && pwd)"
+expected_rid="${WEBAPI_EXPECTED_RID:-linux-x64}"
+case "$expected_rid" in
+  linux-x64|linux-arm64) ;;
+  *) echo "Unsupported full-ZIP smoke runtime identifier: $expected_rid" >&2; exit 2 ;;
+esac
+
 archive="${1:?Usage: test-full-zip-runtime.sh <v2rayN-linux-64-WebAPI.zip>}"
 archive="$(realpath "$archive")"
 test -s "$archive"
@@ -32,7 +40,7 @@ unzip -q "$archive" -d "$install_dir"
 executable="$install_dir/v2rayN.WebAPI"
 test -x "$executable"
 test -s "$install_dir/.env.example"
-expected_version="$(python3 - "$archive" <<'PY'
+expected_version="$(python3 - "$archive" "$expected_rid" <<'PY'
 import json
 import sys
 import zipfile
@@ -40,7 +48,7 @@ import zipfile
 with zipfile.ZipFile(sys.argv[1]) as package:
     identity = json.loads(package.read("v2rayN.WebAPI.build.json"))
 assert identity["product"] == "v2rayN.WebAPI", identity
-assert identity["rid"] == "linux-x64", identity
+assert identity["rid"] == sys.argv[2], identity
 print(identity["version"])
 PY
 )"
@@ -204,5 +212,14 @@ for entry in os.scandir("/proc"):
         residual.append((entry.name, executable))
 assert not residual, f"Residual Web/Core processes remain: {residual}"
 PY
+
+if [[ -n "${WEBAPI_GLIBC_BASELINE:-}" ]]; then
+  abi_guard="$repo_root/scripts/fork/check-abi-baseline.sh"
+  test -f "$abi_guard"
+  # Single-file startup extracts native libraries outside the install tree. Both
+  # scans must find ELF files and retain the fork guard's baseline/DT_RELR failures.
+  bash "$abi_guard" "$install_dir" "$WEBAPI_GLIBC_BASELINE"
+  bash "$abi_guard" "$temporary/dotnet-bundle" "$WEBAPI_GLIBC_BASELINE"
+fi
 
 echo "Full ZIP runtime smoke passed (healthy API, authenticated stopped Core, graceful shutdown, no residual Web/Core processes)."

@@ -28,13 +28,13 @@ case "$rid" in
 esac
 
 export NUGET_PACKAGES="${NUGET_PACKAGES:-$web_root/.packages/nuget}"
-# Official release builds pass the upstream release tag (for example 7.25.4) so the Web
+# Release builds pass the release tag (for example 7.25.4.1) so the Web
 # build identity follows the same version as the v2rayN Release. Local builds keep a dev identity.
 web_version="${V2RAYN_WEB_VERSION:-0.0.0-dev}"
-web_repository="${V2RAYN_WEB_REPOSITORY:-${GITHUB_REPOSITORY:-2dust/v2rayN}}"
+web_repository="${V2RAYN_WEB_REPOSITORY:-${GITHUB_REPOSITORY:-aleksandr-miheichev/v2rayN-oldos}}"
 web_commit="${V2RAYN_WEB_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)}"
 web_build_date="${V2RAYN_WEB_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-if [[ ! "$web_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+if [[ ! "$web_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?(-[0-9A-Za-z.-]+)?$ ]]; then
   printf 'Invalid Web version identity: %s\n' "$web_version" >&2
   exit 2
 fi

@@ -3,13 +3,13 @@ using System.Text.RegularExpressions;
 namespace v2rayN.WebAPI.Services;
 
 /// <summary>
-/// Describes the official v2rayN release channel used by the Web self-update.
-/// Official releases use the upstream release tag (for example <c>7.25.3</c>) and carry
+/// Describes the v2rayN release channel used by the Web self-update.
+/// Releases use a canonical three- or four-part tag (for example <c>7.25.3.2</c>) and carry
 /// <c>WebAPI-update.json</c> plus the app-only ZIP archives as additional release assets.
 /// </summary>
 internal static partial class WebReleaseChannel
 {
-    public const string DefaultRepository = "2dust/v2rayN";
+    public const string DefaultRepository = "aleksandr-miheichev/v2rayN-oldos";
     public const string ManifestAssetName = "WebAPI-update.json";
     private const string ApiBase = "https://api.github.com/repos";
 
@@ -49,6 +49,6 @@ internal static partial class WebReleaseChannel
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex RepositoryPattern();
 
-    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?$", RegexOptions.CultureInvariant)]
     private static partial Regex ReleaseTagPattern();
 }

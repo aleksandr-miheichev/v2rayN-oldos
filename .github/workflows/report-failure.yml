@@ -39,6 +39,7 @@ on:
       - release Windows
       - release Windows desktop (Avalonia UI)
       - release Windows x86
+      - release v2rayN.WebAPI
       - release all platforms
       - auto release
       - finalize release
