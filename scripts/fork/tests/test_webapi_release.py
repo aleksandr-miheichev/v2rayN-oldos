@@ -133,6 +133,81 @@ class WorkflowGuards(ShellFixture):
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
 
+class PatchWhitespaceGuard(ShellFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        git(self.work, "init", "--quiet")
+        shutil.copyfile(ROOT / ".gitattributes", self.work / ".gitattributes")
+        git(self.work, "add", ".gitattributes")
+        git(self.work, "commit", "--quiet", "-m", "fixture attributes")
+
+    def check_added_file(self, relative: str, content: str) -> subprocess.CompletedProcess[str]:
+        target = self.work / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8", newline="\n")
+        git(self.work, "add", relative)
+        git(self.work, "commit", "--quiet", "-m", "fixture change")
+        script = workflow_step("build-WebAPI.yml", "verify", name="Check patch whitespace")
+        return self.shell(script, {"BASE_SHA": ""}, self.work)
+
+    def test_embedded_patch_context_does_not_block_the_release(self) -> None:
+        relative = "scripts/fork/patches/v2rayN/GlobalHotKeys/0001-allow-null-lpwindowname.patch"
+        result = self.check_added_file(relative, (ROOT / relative).read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_source_trailing_whitespace_still_blocks_the_release(self) -> None:
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { } \n")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("trailing whitespace", result.stdout)
+
+    def test_non_patch_trailing_whitespace_still_blocks_the_release(self) -> None:
+        result = self.check_added_file("scripts/fork/check.sh", "exit 0 \n")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("trailing whitespace", result.stdout)
+
+
+@unittest.skipUnless(shutil.which("pwsh"), "PowerShell 7 is required for the x86 release steps")
+class X86CoreGuards(ShellFixture):
+    def powershell(self, script: str) -> subprocess.CompletedProcess[str]:
+        path = self.work / "step.ps1"
+        path.write_text(script.replace("${{ matrix.flavor }}", "wpf"), encoding="utf-8", newline="\n")
+        workflow = yaml.safe_load((ROOT / ".github/workflows/build-windows-x86.yml").read_text(encoding="utf-8"))
+        env = dict(os.environ, **workflow["jobs"]["package-x86"].get("env", {}))
+        return subprocess.run(
+            [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File", str(path)],
+            cwd=self.work, env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_unverified_core_archive_is_never_extracted(self) -> None:
+        # Stub only the network and expansion boundaries; execute the real hash guard.
+        stubs = r'''
+function Invoke-WebRequest { param($Uri, $OutFile)
+    [IO.File]::WriteAllText((Join-Path $PWD $OutFile), 'tampered download')
+}
+function Expand-Archive {
+    [IO.File]::WriteAllText((Join-Path $PWD 'extracted'), 'unsafe extraction')
+    throw 'An unverified archive reached expansion'
+}
+'''
+        script = workflow_step("build-windows-x86.yml", "package-x86", name="Download x86 cores and rule assets")
+        result = self.powershell(stubs + script)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SHA256 mismatch", result.stderr)
+        self.assertFalse((self.work / "extracted").exists(), result.stdout + result.stderr)
+
+    def test_x64_core_cannot_pass_the_x86_startup_gate(self) -> None:
+        binary = bytearray(128)
+        binary[0x3c:0x40] = (64).to_bytes(4, "little")
+        binary[68:70] = (0x8664).to_bytes(2, "little")
+        path = self.work / "publish/wpf/bin/xray/xray.exe"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(binary)
+        script = workflow_step("build-windows-x86.yml", "package-x86", name="Verify packaged x86 core startup")
+        result = self.powershell(script)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Expected an x86 PE binary", result.stderr)
+
+
 class FinalizerContract(ShellFixture):
     def setUp(self) -> None:
         super().setUp()

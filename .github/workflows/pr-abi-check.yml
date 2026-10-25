@@ -33,8 +33,8 @@ jobs:
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
-        # Same SDK policy as build.yml: float on the major, ga quality only.
-        with: { dotnet-version: '10.x', dotnet-quality: 'ga' }
+        # Share the exact published SDK used by builds and release verification.
+        with: { global-json-file: global.json }
 
       - name: Restore
         run: dotnet restore v2rayN/ServiceLib/ServiceLib.csproj
