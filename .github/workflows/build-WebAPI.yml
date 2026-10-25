@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -162,7 +162,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
@@ -346,7 +346,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
@@ -475,7 +475,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - name: Publish native API
         env:
           FORK_VERSION: ${{ needs.identity.outputs.release == 'true' && needs.identity.outputs.version || '' }}
