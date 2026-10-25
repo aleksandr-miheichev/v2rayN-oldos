@@ -10,12 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (for example 7.x.y). Empty builds a development API package.'
+        description: 'Fork release version (for example 7.x.y.1). Empty builds a development API package.'
         required: false
         default: ''
         type: string
   pull_request:
-    branches: [master]
+    branches: [oldos]
     paths:
       - 'v2rayN/v2rayN.WebAPI/**'
       - 'v2rayN/ServiceLib/**'
@@ -28,8 +28,10 @@ on:
       - '.github/workflows/release-WebAPI.yml'
       - '.github/workflows/build-all.yml'
       - '.github/workflows/upload-sign.yml'
+      - '.github/workflows/verify-WebAPI-compat.yml'
+      - 'scripts/fork/**'
   push:
-    branches: [master]
+    branches: [patches]
     paths:
       - 'v2rayN/v2rayN.WebAPI/**'
       - 'v2rayN/ServiceLib/**'
@@ -42,8 +44,11 @@ on:
       - '.github/workflows/release-WebAPI.yml'
       - '.github/workflows/build-all.yml'
       - '.github/workflows/upload-sign.yml'
+      - '.github/workflows/verify-WebAPI-compat.yml'
+      - 'scripts/fork/**'
 permissions:
   contents: read
+  actions: read
 
 jobs:
   identity:
@@ -71,7 +76,7 @@ jobs:
               echo "build_date=$build_date"
             } >> "$GITHUB_OUTPUT"
           else
-            [[ "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            [[ "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){3}$ ]] || {
               echo "Invalid release tag: $RELEASE_TAG" >&2
               exit 1
             }
@@ -95,7 +100,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Verify fork release guards against local fixtures
+        run: |
+          python3 -m pip install 'PyYAML==6.0.3'
+          python3 scripts/fork/tests/test_webapi_release.py
       - name: Verify API build, backend and ServiceLib tests, native startup and package boundaries
         run: bash v2rayN/v2rayN.WebAPI/Scripts/verify.sh "$RUNNER_TEMP/v2rayN.WebAPI-verify"
       - name: Check patch whitespace
@@ -132,7 +144,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -156,6 +168,8 @@ jobs:
         run: dotnet test --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj --configuration Release --no-restore
       - name: Publish win-x64 self-contained single-file WebAPI
         shell: pwsh
+        env:
+          FORK_VERSION: ${{ needs.identity.outputs.release == 'true' && needs.identity.outputs.version || '' }}
         run: |
           $publishDirectory = Join-Path $env:RUNNER_TEMP 'v2rayN.WebAPI-win-x64'
           dotnet publish v2rayN/v2rayN.WebAPI/v2rayN.WebAPI.csproj `
@@ -314,7 +328,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -338,6 +352,8 @@ jobs:
         run: dotnet test --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj --configuration Release --no-restore
       - name: Publish win-arm64 self-contained single-file WebAPI
         shell: pwsh
+        env:
+          FORK_VERSION: ${{ needs.identity.outputs.release == 'true' && needs.identity.outputs.version || '' }}
         run: |
           $publishDirectory = Join-Path $env:RUNNER_TEMP 'v2rayN.WebAPI-win-arm64'
           dotnet publish v2rayN/v2rayN.WebAPI/v2rayN.WebAPI.csproj `
@@ -426,8 +442,8 @@ jobs:
         # of Desktop workflows and the container platform matrix.
         include: >-
           ${{ fromJSON(needs.identity.outputs.release == 'true'
-            && '[{"rid":"linux-x64","runner":"ubuntu-24.04"},{"rid":"linux-arm64","runner":"ubuntu-24.04-arm"}]'
-            || '[{"rid":"linux-x64","runner":"ubuntu-24.04"}]') }}
+            && '[{"rid":"linux-x64","runner":"ubuntu-22.04"},{"rid":"linux-arm64","runner":"ubuntu-22.04-arm"}]'
+            || '[{"rid":"linux-x64","runner":"ubuntu-22.04"}]') }}
     runs-on: ${{ matrix.runner }}
     env:
       RID: ${{ matrix.rid }}
@@ -441,8 +457,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - name: Publish native API
+        env:
+          FORK_VERSION: ${{ needs.identity.outputs.release == 'true' && needs.identity.outputs.version || '' }}
         run: bash v2rayN/v2rayN.WebAPI/Scripts/publish-native.sh "$RID"
       - name: Verify native executable
         run: test -x "v2rayN/v2rayN.WebAPI/publish/$RID/v2rayN.WebAPI"
@@ -460,6 +478,15 @@ jobs:
           "$publish/bin/xray/xray" -version
           "$publish/bin/sing_box/sing-box" version
           "$publish/bin/mihomo/mihomo" -v
+      - name: Verify packaged startup and embedded native ABI on this architecture
+        if: needs.identity.outputs.release == 'true'
+        env:
+          WEBAPI_EXPECTED_RID: ${{ matrix.rid }}
+          WEBAPI_GLIBC_BASELINE: '2.34'
+        run: |
+          archive="$(find dist -maxdepth 1 -type f -name '*-WebAPI.zip' -print -quit)"
+          test -n "$archive"
+          bash v2rayN/v2rayN.WebAPI/Tests/Integration/test-full-zip-runtime.sh "$archive"
       - uses: actions/upload-artifact@v7
         if: needs.identity.outputs.release == 'true'
         with:
@@ -472,7 +499,8 @@ jobs:
   native-riscv64:
     name: Native API build (linux-riscv64)
     needs: identity
-    if: needs.identity.outputs.release == 'true'
+    # This fork does not publish RISC-V packages; retain upstream implementation.
+    if: github.repository == '2dust/v2rayN' && needs.identity.outputs.release == 'true'
     runs-on: ubuntu-24.04-riscv
     container: debian:13
     env:
@@ -596,7 +624,8 @@ jobs:
   native-loong64:
     name: Native API build (linux-loongarch64)
     needs: identity
-    if: needs.identity.outputs.release == 'true'
+    # This fork does not publish LoongArch packages; retain upstream implementation.
+    if: github.repository == '2dust/v2rayN' && needs.identity.outputs.release == 'true'
     runs-on: ubuntu-26.04-arm
     env:
       RID: linux-loongarch64
@@ -874,6 +903,7 @@ jobs:
           build-args: |
             RID=${{ matrix.rid }}
             WEB_VERSION=${{ needs.identity.outputs.version }}
+            FORK_VERSION=${{ needs.identity.outputs.release == 'true' && needs.identity.outputs.version || '' }}
             WEB_REPOSITORY=${{ github.repository }}
             WEB_COMMIT=${{ github.sha }}
             WEB_BUILD_DATE=${{ needs.identity.outputs.build_date }}
@@ -882,7 +912,7 @@ jobs:
   release-assets:
     name: Assemble API release assets
     if: needs.identity.outputs.release == 'true'
-    needs: [identity, verify, windows, windows-arm64, native, native-riscv64, native-loong64, container]
+    needs: [identity, verify, windows, windows-arm64, native, container]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -921,3 +951,9 @@ jobs:
           name: WebAPI-release-manifest
           path: release-assets/WebAPI-update.json
           if-no-files-found: error
+
+  compatibility:
+    name: Verify native WebAPI on the supported Linux baseline
+    if: needs.identity.outputs.release == 'true'
+    needs: [identity, release-assets]
+    uses: ./.github/workflows/verify-WebAPI-compat.yml

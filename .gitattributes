@@ -3,6 +3,10 @@
 ###############################################################################
 * text=auto
 
+# Unified-diff context represents an empty line with a required single space.
+# Keep normal source whitespace checks while allowing embedded submodule patches.
+scripts/fork/patches/**/*.patch whitespace=-blank-at-eol
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #
