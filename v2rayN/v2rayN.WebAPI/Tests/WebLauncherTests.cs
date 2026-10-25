@@ -139,6 +139,38 @@ public class WebLauncherTests
     }
 
     [Test]
+    public async Task ReadCurrentEnvironmentPreservesPlatformVariableNameSemantics()
+    {
+        var upperName = $"V2RAYN_WEB_TEST_{Guid.NewGuid():N}".ToUpperInvariant();
+        var lowerName = upperName.ToLowerInvariant();
+        var originalUpperValue = Environment.GetEnvironmentVariable(upperName);
+        var originalLowerValue = Environment.GetEnvironmentVariable(lowerName);
+        try
+        {
+            Environment.SetEnvironmentVariable(upperName, "upper-value");
+            Environment.SetEnvironmentVariable(lowerName, "lower-value");
+
+            var environment = LauncherEnvironment.ReadCurrentEnvironment();
+
+            if (OperatingSystem.IsWindows())
+            {
+                await environment[upperName].Should().BeEqualTo("lower-value");
+                await environment[lowerName].Should().BeEqualTo("lower-value");
+            }
+            else
+            {
+                await environment[upperName].Should().BeEqualTo("upper-value");
+                await environment[lowerName].Should().BeEqualTo("lower-value");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(upperName, originalUpperValue);
+            Environment.SetEnvironmentVariable(lowerName, originalLowerValue);
+        }
+    }
+
+    [Test]
     public async Task ExistingHealthyInstanceIsReusedAndBrowserAdapterIsInvoked()
     {
         if (!OperatingSystem.IsLinux()) return;

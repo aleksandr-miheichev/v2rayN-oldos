@@ -1,0 +1,190 @@
+name: auto release
+# Part of this fork's release pipeline; the product branch is oldos.
+
+# Publishes a release when upstream has moved, without waiting for upstream to
+# cut one of its own.
+#
+# Releases are batched rather than fired per commit: upstream often pushes
+# several commits in a row, and releasing each one separately would both waste
+# the whole build matrix and publish intermediate states. A release is cut only
+# once the newest commit has been quiet for a while.
+#
+# The release is created as a prerelease and holds no assets yet. The build
+# workflows upload into it, the compatibility gate decides whether they may,
+# and finalize-release.yml promotes it once it is complete.
+
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      ignore_quiet_period:
+        description: Release even if upstream committed a moment ago.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+env:
+  PRODUCT_BRANCH: oldos
+  QUIET_MINUTES: '90'
+  # The notes step adds a git remote literally named "upstream" for the
+  # provenance merge-base, and gh resolves its target repository from the
+  # remotes, preferring exactly that name -- so without this pin,
+  # `gh release create` tried to publish into 2dust/v2rayN and got a 403.
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  release:
+    name: cut a release if there is anything to release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the product branch
+        uses: actions/checkout@v7
+        with:
+          ref: oldos
+          fetch-depth: '0'
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          previous="$(git tag --list '[0-9]*.[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+          echo "Previous release tag: ${previous:-<none>}"
+
+          if [[ -n "$previous" ]]; then
+            new_commits="$(git rev-list --count "${previous}..HEAD")"
+          else
+            new_commits="$(git rev-list --count HEAD)"
+          fi
+          echo "Commits since that release: ${new_commits}"
+
+          if [[ "$new_commits" == "0" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing new to release."
+            exit 0
+          fi
+
+          # Commits that touch only CI or documentation do not change a single
+          # byte of the packages, so releasing them would publish identical
+          # artifacts under a new number. The submodule patches and their
+          # applier are the exception under scripts/fork: those do reach the
+          # compiled binaries.
+          if [[ -n "$previous" ]]; then
+            product_changes="$(git diff --name-only "${previous}..HEAD" | awk '
+              /^\.github\//                             { next }
+              /\.md$/                                   { next }
+              /^scripts\/fork\/patches\//               { print; next }
+              /^scripts\/fork\/apply-fork-patches\.sh$/ { print; next }
+              /^scripts\/fork\//                        { next }
+              { print }')"
+            if [[ -z "$product_changes" ]]; then
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "Only CI or documentation changed since ${previous}; the packages would be identical."
+              exit 0
+            fi
+            echo "Files that change the product since ${previous}:"
+            echo "$product_changes" | head -n 20
+          fi
+
+          # Quiet period: let a burst of upstream commits settle so one release
+          # covers the whole burst.
+          age_minutes=$(( ( $(date -u +%s) - $(git log -1 --format=%ct HEAD) ) / 60 ))
+          echo "Newest commit is ${age_minutes} minutes old (quiet period ${QUIET_MINUTES})."
+          if [[ "${{ inputs.ignore_quiet_period }}" != "true" && "$age_minutes" -lt "$QUIET_MINUTES" ]]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "Still inside the quiet period, waiting for the next run."
+            exit 0
+          fi
+
+          # The first three components track the upstream version; the fourth
+          # counts this fork's builds of it.
+          base="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' v2rayN/Directory.Build.props | head -n1)"
+          [[ -n "$base" ]] || { echo "Could not read <Version> from Directory.Build.props"; exit 1; }
+          last_rev="$(git tag --list "${base}.*" --sort=-v:refname | head -n1 | awk -F. '{print $4}')"
+          next_rev=$(( ${last_rev:-0} + 1 ))
+          tag="${base}.${next_rev}"
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Next release tag: ${tag}"
+
+      - name: Build the release notes
+        if: steps.decide.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          # The upstream base serves two purposes: release_notes.py separates
+          # upstream changes from fork maintenance with it, and the provenance
+          # link below points at it -- linking the fork's own HEAD into the
+          # upstream repository produced dead links, because that commit only
+          # exists here.
+          git remote add upstream https://github.com/2dust/v2rayN.git 2>/dev/null || true
+          git fetch -q --no-tags upstream master
+          base_commit="$(git merge-base HEAD upstream/master)"
+
+          previous='${{ steps.decide.outputs.previous }}'
+          if [[ -n "$previous" ]]; then
+            python3 scripts/fork/release_notes.py --from "$previous" --to HEAD \
+              --upstream-ref upstream/master --output notes-body.md
+          else
+            echo "First release of this fork." > notes-body.md
+          fi
+
+          {
+            cat notes-body.md
+            printf '\n'
+            printf -- '---\n\n'
+            printf '### About this build\n\n'
+            printf 'This is upstream [2dust/v2rayN](https://github.com/2dust/v2rayN) '
+            printf 'at commit [`%s`](https://github.com/2dust/v2rayN/commit/%s), ' "$(git rev-parse --short "$base_commit")" "$base_commit"
+            printf 'unchanged except for the compatibility patches of this fork '
+            printf '([what differs](https://github.com/${{ github.repository }}/compare/%s...${{ steps.decide.outputs.tag }})).\n\n' "$base_commit"
+            printf '**Supported systems:** Ubuntu 22.04 and newer, Debian 12 and newer, RHEL 9 and newer, macOS 13.6 and newer, Windows on x64, x86 and arm64.\n\n'
+            printf 'Every release is blocked unless the packages install and the application starts on Ubuntu 22.04, Debian 12 and Rocky Linux 9, '
+            printf 'no shipped binary requires a glibc newer than 2.34, '
+            printf 'and the macOS application launches with its native libraries loading on macOS 14 and 15.\n\n'
+            printf 'Verify a download with the `.sig` file next to it and `v2rayN-public-key.asc` from this release.\n'
+          } > notes.md
+
+          echo '--- release notes ---'
+          cat notes.md
+
+      - name: Create the release
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create '${{ steps.decide.outputs.tag }}' \
+            --target "$(git rev-parse HEAD)" \
+            --title '${{ steps.decide.outputs.tag }}' \
+            --notes-file notes.md \
+            --prerelease
+
+      - name: Start the platform builds
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch is one of the two events that still start a run
+          # when triggered with the default token, which is why no personal
+          # access token is needed anywhere in this repository.
+          #
+          # The builds run at the TAG, not the branch: the branch is rebased
+          # hourly, so by the time a platform is re-run it can point at code
+          # the release never claimed to contain -- the assets of one release
+          # were once built from two different commits this way.
+          gh workflow run build-all.yml \
+            --ref "refs/tags/${{ steps.decide.outputs.tag }}" \
+            -f release_tag='${{ steps.decide.outputs.tag }}'

@@ -61,6 +61,19 @@ public class WebUpdatePackageStagerTests
     }
 
     [Test]
+    public async Task BuildVersionsAllowCanonicalThreeOrFourPartsAndExistingDevelopmentSuffixes()
+    {
+        foreach (var version in new[] { "0.0.0", "7.25.3", "7.25.3.0", "7.25.3.2", "0.0.0-dev", "7.25.3.2-dev.1" })
+            await WebUpdatePackageStager.IsValidVersion(version).Should().BeTrue();
+
+        foreach (var version in new[]
+        {
+            "07.25.3", "7.025.3", "7.25.03", "7.25.3.02", "7.25.3.2.1", "v7.25.3.2", "7.25.3.2-", "7.25", "", null,
+        })
+            await WebUpdatePackageStager.IsValidVersion(version).Should().BeFalse();
+    }
+
+    [Test]
     public async Task ManifestRequiresWebProductHttpsAssetsAndAnExactRid()
     {
         var manifest = new WebUpdateManifest("v2rayN.WebAPI", "7.25.3", "0123456789abcdef", "2026-09-28T00:00:00Z",
@@ -223,6 +236,51 @@ public class WebUpdatePackageStagerTests
         await File.Exists(Path.Combine(extracted, "guiConfigs", "guiNConfig.json")).Should().BeFalse();
         await File.Exists(Path.Combine(extracted, "WebAPIData", "WebAPI-auth.json")).Should().BeFalse();
         await Directory.GetFiles(extracted, "*", SearchOption.AllDirectories).Length.Should().BeEqualTo(2);
+    }
+
+    [Test]
+    public async Task FourPartForkManifestRoundTripsAndExtractsItsExactBuildIdentity()
+    {
+        using var directory = new TemporaryDirectory();
+        var archive = Path.Combine(directory.Path, "fork-app.zip");
+        var identity = new WebUpdatePackageIdentity("v2rayN.WebAPI", "7.25.3.2", "fork-commit",
+            "2026-10-24T00:00:00Z", "linux-x64");
+        await WriteArchiveAsync(archive,
+        [
+            ("v2rayN.WebAPI", NativeExecutableFixture()),
+            ("v2rayN.WebAPI.build.json", JsonSerializer.SerializeToUtf8Bytes(identity, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
+        ]);
+        var expected = CreateManifest(archive, identity.Version, identity.Commit, identity.Rid, identity.BuildDate);
+        var manifest = WebUpdatePackageStager.ParseManifest(JsonSerializer.Serialize(expected,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var package = WebUpdatePackageStager.RequirePackage(manifest, "linux-x64");
+
+        await manifest.Version.Should().BeEqualTo("7.25.3.2");
+        await package.Url.Should().BeEqualTo("https://github.com/aleksandr-miheichev/v2rayN-oldos/releases/download/7.25.3.2/v2rayN-linux-64-WebAPI-update.zip");
+        await WebReleaseChannel.IsTrustedAssetUrl(package.Url, "aleksandr-miheichev/v2rayN-oldos",
+            manifest.Version, package.Asset).Should().BeTrue();
+        await WebReleaseChannel.IsTrustedAssetUrl(package.Url.Replace("aleksandr-miheichev/v2rayN-oldos", "2dust/v2rayN", StringComparison.Ordinal),
+            "aleksandr-miheichev/v2rayN-oldos", manifest.Version, package.Asset).Should().BeFalse();
+
+        var extracted = Path.Combine(directory.Path, "fork-stage");
+        var actual = await WebUpdatePackageStager.VerifyAndExtractAsync(archive, extracted,
+            manifest, package, CancellationToken.None);
+        await actual.Should().BeEqualTo(identity);
+        await Directory.GetFiles(extracted, "*", SearchOption.AllDirectories).Length.Should().BeEqualTo(2);
+
+        foreach (var changed in new[]
+        {
+            manifest with { Version = "7.25.3.3" },
+            manifest with { Commit = "different-commit" },
+            manifest with { BuildDate = "2026-10-25T00:00:00Z" },
+        })
+            await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(archive,
+                Path.Combine(directory.Path, Guid.NewGuid().ToString("N")), changed, package, CancellationToken.None));
+
+        await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(archive,
+            Path.Combine(directory.Path, "wrong-rid"), manifest, package with { Rid = "linux-arm64" }, CancellationToken.None));
+        await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(archive,
+            Path.Combine(directory.Path, "wrong-hash"), manifest, package with { Sha256 = new string('0', 64) }, CancellationToken.None));
     }
 
     [Test]
@@ -412,7 +470,7 @@ public class WebUpdatePackageStagerTests
             ?? throw new InvalidOperationException($"No app-only asset for {rid}.");
         return new WebUpdateManifest("v2rayN.WebAPI", version, commit, buildDate,
         [new WebUpdatePackage(rid, asset,
-            $"https://github.com/2dust/v2rayN/releases/download/{version}/{asset}",
+            $"https://github.com/aleksandr-miheichev/v2rayN-oldos/releases/download/{version}/{asset}",
             hash, new FileInfo(archive).Length)]);
     }
 
