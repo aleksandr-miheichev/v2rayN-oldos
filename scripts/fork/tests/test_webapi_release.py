@@ -208,6 +208,121 @@ function Expand-Archive {
         self.assertIn("Expected an x86 PE binary", result.stderr)
 
 
+class PackageSdkBootstrap(ShellFixture):
+    def bootstrap(self, package_script: str, *, require_sdk_deps: bool = False, foreign_cwd: bool = False, relative_sdk_root: bool = False) -> subprocess.CompletedProcess[str]:
+        # Exercise each real dependency entry point without changing the host OS.
+        source = (ROOT / package_script).read_text(encoding="utf-8")
+        (self.work / package_script).write_text(source.rsplit('main "$@"', 1)[0], encoding="utf-8")
+        (self.work / "global.json").write_text('{"sdk":{"version":"10.0.777"}}', encoding="utf-8")
+        helper = ROOT / "scripts/fork/install-dotnet-sdk.sh"
+        if helper.exists():
+            target = self.work / "scripts/fork/install-dotnet-sdk.sh"
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(helper, target)
+        (self.work / "installer.sh").write_text(r'''#!/usr/bin/env bash
+set -euo pipefail
+version= directory=
+while (($#)); do
+  case "$1" in
+    --version) version="$2"; shift 2 ;;
+    --install-dir) directory="$2"; shift 2 ;;
+    --no-path) shift ;;
+    *) echo "Unexpected installer selector: $1" >&2; exit 91 ;;
+  esac
+done
+[[ "$version" == 10.0.777 ]] || exit 92
+mkdir -p "$directory"
+cat > "$directory/dotnet" <<'SDK'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --version && -n "${ASSERT_SDK_CWD:-}" && "$PWD" != "$ASSERT_SDK_CWD" ]]; then
+  echo 'SDK resolved against the wrong global.json' >&2
+  exit 95
+fi
+echo 10.0.777
+SDK
+chmod +x "$directory/dotnet"
+''', encoding="utf-8", newline="\n")
+        (self.work / "bin").mkdir()
+        old_sdk = self.work / "bin/dotnet"
+        old_sdk.write_text("#!/usr/bin/env bash\necho 10.0.113\n", encoding="utf-8", newline="\n")
+        old_sdk.chmod(0o755)
+        script = r'''
+cd "$FIXTURE_ROOT"
+export FORK_DOTNET_ROOT="$PWD/sdk" PATH="$PWD/bin:$PATH" FIXTURE_INSTALLER="$PWD/installer.sh"
+sudo() {
+  if [[ "$1" == dnf && "$REQUIRE_SDK_DEPS" == 1 ]]; then
+    for dependency in glibc libgcc ca-certificates openssl-libs libstdc++ libicu tzdata krb5-libs; do
+      [[ " $* " == *" $dependency "* ]] || { echo "Missing SDK dependency: $dependency" >&2; return 94; }
+    done
+  fi
+}
+apt-get() { :; }
+dnf() { :; }
+curl() {
+  local output=
+  while (($#)); do
+    if [[ "$1" == -o ]]; then output="$2"; shift 2; else shift; fi
+  done
+  cp "$FIXTURE_INSTALLER" "$output"
+}
+wget() { cp "$FIXTURE_INSTALLER" dotnet-install.sh; }
+export -f sudo apt-get dnf curl wget
+source "$PWD/$PACKAGE_SCRIPT"
+OS_ID=fixture HOST_ARCH=x86_64
+OUTPUT_DIR="$PWD/output"
+if [[ "$FOREIGN_CWD" == 1 ]]; then
+  export ASSERT_SDK_CWD="$PWD"
+  mkdir foreign
+  cd foreign
+  if [[ "$RELATIVE_SDK_ROOT" == 1 ]]; then export FORK_DOTNET_ROOT=../sdk; fi
+fi
+install_dependencies
+cd "$FIXTURE_ROOT"
+[[ "$(dotnet --version)" == 10.0.777 ]]
+'''
+        return self.shell(script, {
+            "FIXTURE_ROOT": self.work.as_posix(), "PACKAGE_SCRIPT": package_script,
+            "REQUIRE_SDK_DEPS": "1" if require_sdk_deps else "0",
+            "FOREIGN_CWD": "1" if foreign_cwd else "0",
+            "RELATIVE_SDK_ROOT": "1" if relative_sdk_root else "0",
+        })
+
+    def test_debian_installs_the_pinned_sdk_without_a_channel_alias(self) -> None:
+        result = self.bootstrap("package-debian.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rpm_replaces_an_incompatible_distribution_sdk(self) -> None:
+        result = self.bootstrap("package-rhel.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rpm_provisions_native_dependencies_before_the_manual_sdk(self) -> None:
+        result = self.bootstrap("package-rhel.sh", require_sdk_deps=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_sdk_verification_uses_the_repository_instead_of_the_callers_directory(self) -> None:
+        result = self.bootstrap("package-debian.sh", foreign_cwd=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_relative_sdk_root_survives_the_package_working_directory_change(self) -> None:
+        result = self.bootstrap("package-debian.sh", foreign_cwd=True, relative_sdk_root=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_keep_mode_uses_the_explicit_fork_version_without_checkout(self) -> None:
+        for package_script in ("package-debian.sh", "package-rhel.sh"):
+            with self.subTest(package_script=package_script):
+                source = (ROOT / package_script).read_text(encoding="utf-8")
+                (self.work / package_script).write_text(source.rsplit('main "$@"', 1)[0], encoding="utf-8")
+                script = r'''
+cd "$FIXTURE_ROOT"
+source "$PACKAGE_SCRIPT"
+FORK_VERSION=0.0.0.0
+apply_channel_or_keep keep
+[[ "$VERSION" == 0.0.0.0 ]]
+'''
+                result = self.shell(script, {"FIXTURE_ROOT": self.work.as_posix(), "PACKAGE_SCRIPT": package_script})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 class FinalizerContract(ShellFixture):
     def setUp(self) -> None:
         super().setUp()
