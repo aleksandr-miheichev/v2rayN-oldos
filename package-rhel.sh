@@ -96,8 +96,15 @@ install_dependencies() {
   local install_ok=0
 
   if command -v dnf >/dev/null 2>&1; then
-    sudo dnf -y install rpm-build rpmdevtools curl unzip tar jq rsync dotnet-sdk-10.0 \
-      && install_ok=1
+    sudo dnf -y install rpm-build rpmdevtools curl unzip tar jq rsync \
+      glibc libgcc ca-certificates openssl-libs libstdc++ libicu tzdata krb5-libs
+    local script_root
+    script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    bash "$script_root/scripts/fork/install-dotnet-sdk.sh"
+    DOTNET_ROOT="$(cd "${FORK_DOTNET_ROOT:-"$HOME/.dotnet"}" && pwd)"
+    export DOTNET_ROOT
+    export PATH="$DOTNET_ROOT:$PATH"
+    dotnet --info >/dev/null 2>&1 && install_ok=1
   fi
 
   if [[ "$install_ok" -ne 1 ]]; then
@@ -196,7 +203,7 @@ apply_channel_or_keep() {
 
   if [[ "$ch" == "keep" ]]; then
     echo "[*] Keep current repository state (no checkout)."
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')"
+    VERSION="${FORK_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')}"
     VERSION="${VERSION#v}"
     return 0
   fi

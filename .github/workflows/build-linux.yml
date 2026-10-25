@@ -34,18 +34,19 @@ jobs:
 
   deb:
     name: build and release deb x64 & arm64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    # Exercise native packaging and its SDK on patches before creating a tag.
+    if: github.event_name == 'push' || inputs.release_tag != ''
     runs-on: ubuntu-latest
     # Deliberate pin: the container is the packaging environment, and its
     # dpkg decides the .deb format floor -- change it consciously, the
     # compatibility gate will judge the result.
     container: debian:13
     env:
-      RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+      RELEASE_TAG: "${{ inputs.release_tag }}"
       # Without this the assemblies keep the upstream three-component version,
       # which is forever below the fork's four-component release tag -- so the
       # updater offered every deb user a phantom update.
-      FORK_VERSION: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+      FORK_VERSION: "${{ inputs.release_tag || '0.0.0.0' }}"
     steps:
     - name: Prepare tools (Debian)
       shell: bash
@@ -62,7 +63,12 @@ jobs:
     - name: Ensure script permissions
       run: chmod 755 package-debian.sh
     - name: Package DEB (Debian-family)
-      run: ./package-debian.sh "${RELEASE_TAG}" --arch all
+      run: |
+        if [[ -n "$RELEASE_TAG" ]]; then
+          ./package-debian.sh "$RELEASE_TAG" --arch all
+        else
+          ./package-debian.sh --buildfrom 3 --arch all
+        fi
     - name: Collect DEBs into workspace
       run: |
         mkdir -p "$GITHUB_WORKSPACE/dist/deb"
@@ -77,15 +83,15 @@ jobs:
 
   rpm:
     name: build and release rpm x64 & arm64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.event_name == 'push' || inputs.release_tag != ''
     runs-on: ubuntu-latest
     # Deliberate pin: the rpm toolchain of this container sets the package
     # format floor -- change it consciously, the gate will judge the result.
     container: registry.access.redhat.com/ubi10/ubi
     env:
-      RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+      RELEASE_TAG: "${{ inputs.release_tag }}"
       # Same phantom-update prevention as in the deb job above.
-      FORK_VERSION: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+      FORK_VERSION: "${{ inputs.release_tag || '0.0.0.0' }}"
     steps:
     - name: Prepare tools (Red Hat)
       shell: bash
@@ -128,7 +134,12 @@ jobs:
     - name: Ensure script permissions
       run: chmod 755 package-rhel.sh
     - name: Package RPM (RHEL-family)
-      run: ./package-rhel.sh "${RELEASE_TAG}" --arch all
+      run: |
+        if [[ -n "$RELEASE_TAG" ]]; then
+          ./package-rhel.sh "$RELEASE_TAG" --arch all
+        else
+          ./package-rhel.sh --buildfrom 3 --arch all
+        fi
     - name: Collect RPMs into workspace
       run: |
         mkdir -p "$GITHUB_WORKSPACE/dist/rpm"
@@ -146,10 +157,11 @@ jobs:
     needs: [ deb, rpm ]
     uses: ./.github/workflows/verify-compat.yml
     with:
-      release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+      release_tag: "${{ inputs.release_tag }}"
 
   publish-manifest:
     name: attach the build manifest to the release
+    if: inputs.release_tag != ''
     needs: verify
     runs-on: ubuntu-latest
     steps:
@@ -169,6 +181,7 @@ jobs:
 
   release-deb:
     name: sign and upload deb x64 arm64
+    if: inputs.release_tag != ''
     needs: [ deb, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-deb, file_pattern: "*.deb" }
@@ -176,6 +189,7 @@ jobs:
 
   release-rpm:
     name: sign and upload rpm x64 arm64
+    if: inputs.release_tag != ''
     needs: [ rpm, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm, file_pattern: "*.rpm" }
