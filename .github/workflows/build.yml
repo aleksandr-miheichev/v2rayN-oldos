@@ -75,10 +75,9 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v6
       with:
-        # Fork divergence: float on the major with ga quality, so a new .NET
-        # 10 feature band arrives on its own; upstream pins the 10.0.1xx band.
-        dotnet-version: '10.x'
-        dotnet-quality: 'ga'
+        # Use the published SDK pinned in global.json; floating aliases can
+        # redirect to a private origin before the public feed is usable.
+        global-json-file: global.json
 
     - name: Resolve the fork version from the release tag
       shell: bash
