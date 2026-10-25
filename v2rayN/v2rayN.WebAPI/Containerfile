@@ -11,7 +11,7 @@ RUN apk add --no-cache ca-certificates curl unzip
 COPY v2rayN/v2rayN.WebAPI/Scripts/fetch-core-bundle.sh /usr/local/bin/fetch-core-bundle
 RUN sh /usr/local/bin/fetch-core-bundle "$RID" /out/bin
 
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:afd0ccff9d306812a69ef0f47458376b6acb544ae866cfc4b8d28ff0eef35ea7 AS publish
 ARG RID
 ARG WEB_VERSION
 ARG FORK_VERSION
@@ -19,6 +19,7 @@ ARG WEB_COMMIT
 ARG WEB_BUILD_DATE
 ARG WEB_REPOSITORY
 WORKDIR /src
+COPY global.json ./
 COPY v2rayN/ ./v2rayN/
 RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.WebAPI/v2rayN.WebAPI.csproj \
     --configuration Release \
