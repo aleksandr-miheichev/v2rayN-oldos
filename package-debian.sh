@@ -157,12 +157,13 @@ install_dependencies() {
 
     case "$HOST_ARCH" in
       x86_64|aarch64)
-        wget -q https://dot.net/v1/dotnet-install.sh
-        chmod +x dotnet-install.sh
-        ./dotnet-install.sh --version "$DOTNET_SDK_VERSION" --install-dir "$HOME/.dotnet"
+        local script_root
+        script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+        bash "$script_root/scripts/fork/install-dotnet-sdk.sh"
 
-        export PATH="$HOME/.dotnet:$PATH"
-        export DOTNET_ROOT="$HOME/.dotnet"
+        DOTNET_ROOT="$(cd "${FORK_DOTNET_ROOT:-"$HOME/.dotnet"}" && pwd)"
+        export DOTNET_ROOT
+        export PATH="$DOTNET_ROOT:$PATH"
 
         dotnet --info >/dev/null 2>&1 && install_ok=1
         ;;
@@ -323,7 +324,7 @@ apply_channel_or_keep() {
 
   if [[ "$ch" == "keep" ]]; then
     echo "[*] Keep current repository state (no checkout)."
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')"
+    VERSION="${FORK_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')}"
     VERSION="${VERSION#v}"
     return 0
   fi
