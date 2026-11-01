@@ -323,6 +323,43 @@ apply_channel_or_keep keep
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class PackageZipIdentity(ShellFixture):
+    def variables(self, target: str, arch: str, aot: bool = False) -> dict[str, str]:
+        script = workflow_step("package-zip.yml", "package", step_id="package-vars")
+        script = script.replace("${{ matrix.arch }}", arch)
+        output = self.work / "output"
+        output.write_text("", encoding="utf-8")
+        result = self.shell(script, {
+            "INPUT_TARGET": target, "INPUT_IS_AOT": "true" if aot else "false",
+            "Target": "windows" if target == "windows-desktop" else target,
+            "Arch": "64" if arch == "x64" else arch, "GITHUB_OUTPUT": output.as_posix(),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_non_aot_packages_keep_the_existing_release_asset_names(self) -> None:
+        cases = (
+            ("linux", "x64", "v2rayN-linux-64.zip"),
+            ("linux", "arm64", "v2rayN-linux-arm64.zip"),
+            ("macos", "x64", "v2rayN-macos-64.zip"),
+            ("macos", "arm64", "v2rayN-macos-arm64.zip"),
+            ("windows", "x64", "v2rayN-windows-64.zip"),
+            ("windows", "arm64", "v2rayN-windows-arm64.zip"),
+            ("windows-desktop", "x64", "v2rayN-windows-64-desktop.zip"),
+            ("windows-desktop", "arm64", "v2rayN-windows-arm64-desktop.zip"),
+        )
+        for target, arch, expected in cases:
+            with self.subTest(target=target, arch=arch):
+                values = self.variables(target, arch)
+                self.assertEqual(values["final_package_file"], expected)
+                self.assertEqual(values["build_artifact_name"], arch)
+
+    def test_upstream_aot_artifacts_have_distinct_names(self) -> None:
+        values = self.variables("windows-desktop", "arm64", aot=True)
+        self.assertEqual(values["final_package_file"], "v2rayN-windows-arm64-desktop-aot.zip")
+        self.assertEqual(values["build_artifact_name"], "arm64-aot")
+
+
 class DebianVersionResolution(ShellFixture):
     def resolve(self, fork_version: str, requested: str = "") -> subprocess.CompletedProcess[str]:
         source = (ROOT / "package-debian.sh").read_text(encoding="utf-8")
