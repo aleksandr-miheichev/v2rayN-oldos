@@ -4,6 +4,9 @@ namespace v2rayN.WebAPI.Tests;
 
 public class WebLauncherTests
 {
+    // A small fake PID can name a real systemd service on the test host.
+    private const int FakeOwnerProcessId = int.MaxValue;
+
     [Test]
     public async Task InstanceLockOwnerCanBeReadWhileAnotherProcessHoldsTheLock()
     {
@@ -139,6 +142,38 @@ public class WebLauncherTests
     }
 
     [Test]
+    public async Task ReadCurrentEnvironmentPreservesPlatformVariableNameSemantics()
+    {
+        var upperName = $"V2RAYN_WEB_TEST_{Guid.NewGuid():N}".ToUpperInvariant();
+        var lowerName = upperName.ToLowerInvariant();
+        var originalUpperValue = Environment.GetEnvironmentVariable(upperName);
+        var originalLowerValue = Environment.GetEnvironmentVariable(lowerName);
+        try
+        {
+            Environment.SetEnvironmentVariable(upperName, "upper-value");
+            Environment.SetEnvironmentVariable(lowerName, "lower-value");
+
+            var environment = LauncherEnvironment.ReadCurrentEnvironment();
+
+            if (OperatingSystem.IsWindows())
+            {
+                await environment[upperName].Should().BeEqualTo("lower-value");
+                await environment[lowerName].Should().BeEqualTo("lower-value");
+            }
+            else
+            {
+                await environment[upperName].Should().BeEqualTo("upper-value");
+                await environment[lowerName].Should().BeEqualTo("lower-value");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(upperName, originalUpperValue);
+            Environment.SetEnvironmentVariable(lowerName, originalLowerValue);
+        }
+    }
+
+    [Test]
     public async Task ExistingHealthyInstanceIsReusedAndBrowserAdapterIsInvoked()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -228,9 +263,9 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        await File.WriteAllTextAsync(lockPath, "123\n");
+        await File.WriteAllTextAsync(lockPath, $"{FakeOwnerProcessId}\n");
         var signals = new FakeSignalSender();
-        var stopper = new WebStopper(new FakeHealthProbe(true, 123), signals);
+        var stopper = new WebStopper(new FakeHealthProbe(true, FakeOwnerProcessId), signals);
 
         var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
 
@@ -245,11 +280,11 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         using (heldLock)
         {
             var signals = new FakeSignalSender();
-            var health = new FakeHealthProbe(true, 123);
+            var health = new FakeHealthProbe(true, FakeOwnerProcessId);
             signals.OnSignal = processId =>
             {
                 _ = ReleaseLockAfterDelayAsync(heldLock, health);
@@ -263,7 +298,7 @@ public class WebLauncherTests
             var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
 
             await (result == WebStopResult.Stopped).Should().BeTrue();
-            await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+            await signals.ProcessIds.SequenceEqual([FakeOwnerProcessId]).Should().BeTrue();
             await (health.ProbeCount >= 2).Should().BeTrue();
         }
     }
@@ -282,10 +317,10 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         using (heldLock)
         {
-            var health = new FakeHealthProbe(true, 123, [Environment.ProcessId]);
+            var health = new FakeHealthProbe(true, FakeOwnerProcessId, [Environment.ProcessId]);
             var signals = new FakeSignalSender();
             signals.OnSignal = processId => _ = ReleaseLockAfterDelayAsync(heldLock, health);
             var stopper = new WebStopper(health, signals, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(10));
@@ -293,7 +328,7 @@ public class WebLauncherTests
             var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
 
             await (result == WebStopResult.CoreProcessStillRunning).Should().BeTrue();
-            await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+            await signals.ProcessIds.SequenceEqual([FakeOwnerProcessId]).Should().BeTrue();
         }
     }
 
@@ -304,7 +339,7 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         var signals = new FakeSignalSender();
         var stopper = new WebStopper(new FakeHealthProbe(true, 456), signals);
 
@@ -321,9 +356,9 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         var signals = new FakeSignalSender();
-        var stopper = new WebStopper(new FakeHealthProbe(false, 123), signals);
+        var stopper = new WebStopper(new FakeHealthProbe(false, FakeOwnerProcessId), signals);
 
         var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
 
@@ -338,9 +373,9 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         var signals = new FakeSignalSender();
-        var stopper = new WebStopper(new FakeHealthProbe(true, 123), signals);
+        var stopper = new WebStopper(new FakeHealthProbe(true, FakeOwnerProcessId), signals);
 
         var result = await stopper.StopAsync(lockPath, healthUri: null);
 
@@ -359,10 +394,10 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
         var signals = new FakeSignalSender();
         var stopper = new WebStopper(
-            new FakeHealthProbe(true, 123),
+            new FakeHealthProbe(true, FakeOwnerProcessId),
             signals,
             stopTimeout: TimeSpan.FromMilliseconds(60),
             pollInterval: TimeSpan.FromMilliseconds(5));
@@ -370,7 +405,7 @@ public class WebLauncherTests
         var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
 
         await (result == WebStopResult.TimedOut).Should().BeTrue();
-        await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+        await signals.ProcessIds.SequenceEqual([FakeOwnerProcessId]).Should().BeTrue();
         await WebInstanceLock.IsHeld(lockPath).Should().BeTrue();
     }
 
@@ -381,8 +416,8 @@ public class WebLauncherTests
 
         using var directory = new TemporaryDirectory();
         var lockPath = Path.Combine(directory.Path, "instance.lock");
-        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
-        var health = new FakeHealthProbe(true, 123);
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, FakeOwnerProcessId);
+        var health = new FakeHealthProbe(true, FakeOwnerProcessId);
         health.SetShutdownStage("Core stop");
         var stopper = new WebStopper(
             health,

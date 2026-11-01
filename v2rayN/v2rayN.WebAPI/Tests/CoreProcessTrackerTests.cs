@@ -178,7 +178,8 @@ public class CoreProcessTrackerTests
 
     private static string CopySleepExecutable(string directory)
     {
-        var executable = Path.Combine(directory, "sleep-core-test");
+        // uutils depends on the applet name; the unique directory isolates the image.
+        var executable = Path.Combine(directory, "sleep");
         File.Copy("/bin/sleep", executable);
         return executable;
     }

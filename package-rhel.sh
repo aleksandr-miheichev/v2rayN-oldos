@@ -96,8 +96,15 @@ install_dependencies() {
   local install_ok=0
 
   if command -v dnf >/dev/null 2>&1; then
-    sudo dnf -y install rpm-build rpmdevtools curl unzip tar jq rsync dotnet-sdk-10.0 \
-      && install_ok=1
+    sudo dnf -y install rpm-build rpmdevtools curl unzip tar jq rsync \
+      glibc libgcc ca-certificates openssl-libs libstdc++ libicu tzdata krb5-libs
+    local script_root
+    script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    bash "$script_root/scripts/fork/install-dotnet-sdk.sh"
+    DOTNET_ROOT="$(cd "${FORK_DOTNET_ROOT:-"$HOME/.dotnet"}" && pwd)"
+    export DOTNET_ROOT
+    export PATH="$DOTNET_ROOT:$PATH"
+    dotnet --info >/dev/null 2>&1 && install_ok=1
   fi
 
   if [[ "$install_ok" -ne 1 ]]; then
@@ -196,7 +203,7 @@ apply_channel_or_keep() {
 
   if [[ "$ch" == "keep" ]]; then
     echo "[*] Keep current repository state (no checkout)."
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')"
+    VERSION="${FORK_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')}"
     VERSION="${VERSION#v}"
     return 0
   fi
@@ -498,13 +505,16 @@ ExclusiveArch:  aarch64 x86_64
 Source0:        __PKGROOT__.tar.gz
 
 Requires:       cairo, pango, openssl, mesa-libEGL, mesa-libGL
-Requires:       glibc >= 2.39
-Requires:       fontconfig >= 2.15.0
+Requires:       glibc >= 2.34
+Requires:       fontconfig >= 2.13.1
 Requires:       desktop-file-utils >= 0.26
 Requires:       xdg-utils >= 1.1.3
-Requires:       coreutils >= 9.4
-Requires:       bash >= 5.2.21
-Requires:       freetype >= 2.13
+Requires:       coreutils >= 8.32
+Requires:       bash >= 5.1
+Requires:       freetype >= 2.10
+# Loaded with dlopen by the .NET runtime, so the automatic requires cannot see
+# it; without it the application dies at startup with FailFast.
+Requires:       libicu
 
 %description
 v2rayN Linux for Red Hat Enterprise Linux
