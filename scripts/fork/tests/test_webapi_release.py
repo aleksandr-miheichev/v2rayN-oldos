@@ -141,14 +141,61 @@ class PatchWhitespaceGuard(ShellFixture):
         git(self.work, "add", ".gitattributes")
         git(self.work, "commit", "--quiet", "-m", "fixture attributes")
 
-    def check_added_file(self, relative: str, content: str) -> subprocess.CompletedProcess[str]:
+    def check_added_file(self, relative: str, content: str,
+                         base_sha: str = "") -> subprocess.CompletedProcess[str]:
         target = self.work / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
         git(self.work, "add", relative)
         git(self.work, "commit", "--quiet", "-m", "fixture change")
         script = workflow_step("build-WebAPI.yml", "verify", name="Check patch whitespace")
-        return self.shell(script, {"BASE_SHA": ""}, self.work)
+        return self.shell(script, {"BASE_SHA": base_sha}, self.work)
+
+    def prepare_rebased_push(self) -> str:
+        (self.work / "old-fork.txt").write_text("old fork\n", encoding="utf-8")
+        git(self.work, "add", "old-fork.txt")
+        git(self.work, "commit", "--quiet", "-m", "old fork tip")
+        before = subprocess.check_output(
+            ["git", "-C", str(self.work), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        git(self.work, "checkout", "--quiet", "--detach", "HEAD^")
+        # Existing upstream whitespace is outside the fork's contribution.
+        (self.work / "upstream.cs").write_text("class Upstream { } \n", encoding="utf-8")
+        git(self.work, "add", "upstream.cs")
+        git(self.work, "commit", "--quiet", "-m", "approved upstream")
+        git(self.work, "update-ref", "refs/remotes/origin/master", "HEAD")
+        return before
+
+    def test_missing_before_commit_checks_the_complete_fork_overlay(self) -> None:
+        self.prepare_rebased_push()
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { }\n", "f" * 40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_available_nonancestor_before_uses_the_upstream_baseline(self) -> None:
+        before = self.prepare_rebased_push()
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { }\n", before)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_before_commit_still_rejects_fork_whitespace(self) -> None:
+        self.prepare_rebased_push()
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { } \n", "f" * 40)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("v2rayN/Example.cs", result.stdout)
+        self.assertIn("trailing whitespace", result.stdout)
+
+    def test_missing_before_and_missing_mirror_fail_closed(self) -> None:
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { }\n", "f" * 40)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_before_does_not_hide_whitespace_in_an_earlier_fork_commit(self) -> None:
+        self.prepare_rebased_push()
+        (self.work / "fork-change.cs").write_text("class ForkChange { } \n", encoding="utf-8")
+        git(self.work, "add", "fork-change.cs")
+        git(self.work, "commit", "--quiet", "-m", "earlier fork change")
+        result = self.check_added_file("v2rayN/Example.cs", "class Example { }\n", "f" * 40)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("fork-change.cs", result.stdout)
+        self.assertIn("trailing whitespace", result.stdout)
 
     def test_embedded_patch_context_does_not_block_the_release(self) -> None:
         relative = "scripts/fork/patches/v2rayN/GlobalHotKeys/0001-allow-null-lpwindowname.patch"
