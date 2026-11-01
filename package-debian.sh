@@ -246,7 +246,14 @@ apply_channel_or_keep() {
 }
 
 resolve_version() {
-  if git rev-parse --git-dir >/dev/null 2>&1; then
+  # CI has already selected the source. Its explicit identity must survive
+  # container Git ownership checks without checking out a different revision.
+  if [[ -n "${FORK_VERSION:-}" ]]; then
+    VERSION="${FORK_VERSION#v}"
+    if [[ -n "${VERSION_ARG:-}" && "${VERSION_ARG#v}" != "$VERSION" ]]; then
+      die "Requested version ${VERSION_ARG} does not match FORK_VERSION ${FORK_VERSION}."
+    fi
+  elif git rev-parse --git-dir >/dev/null 2>&1; then
     if [[ -n "${VERSION_ARG:-}" ]]; then
       local clean_ver="${VERSION_ARG#v}"
 

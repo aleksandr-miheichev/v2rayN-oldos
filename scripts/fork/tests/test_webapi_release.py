@@ -323,6 +323,217 @@ apply_channel_or_keep keep
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class DebianVersionResolution(ShellFixture):
+    def resolve(self, fork_version: str, requested: str = "") -> subprocess.CompletedProcess[str]:
+        source = (ROOT / "package-debian.sh").read_text(encoding="utf-8")
+        script = self.work / "package-debian.sh"
+        script.write_text(source.rsplit('main "$@"', 1)[0], encoding="utf-8", newline="\n")
+        return self.shell(r'''
+source "$PACKAGE_SCRIPT"
+git() { return 1; }
+if [[ -n "$REQUESTED_VERSION" ]]; then
+  parse_args "$REQUESTED_VERSION"
+else
+  parse_args --buildfrom 3
+fi
+resolve_version
+printf 'resolved=%s\n' "$VERSION"
+''', {
+            "PACKAGE_SCRIPT": script.as_posix(), "FORK_VERSION": fork_version,
+            "REQUESTED_VERSION": requested,
+        })
+
+    def test_release_identity_survives_unavailable_git(self) -> None:
+        result = self.resolve("7.25.6.42")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("resolved=7.25.6.42", result.stdout.splitlines())
+
+    def test_conflicting_release_identities_fail_instead_of_packaging_another_version(self) -> None:
+        result = self.resolve("7.25.6.42", "7.25.6.41")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("7.25.6.41", result.stderr)
+        self.assertIn("7.25.6.42", result.stderr)
+
+    def test_development_identity_survives_unavailable_git(self) -> None:
+        result = self.resolve("0.0.0.0")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("resolved=0.0.0.0", result.stdout.splitlines())
+
+
+@unittest.skipIf(os.name == "nt", "The container's POSIX sh is exercised on Linux")
+class NativePackageWorkflow(ShellFixture):
+    def invoke(self, job_name: str, tag: str) -> subprocess.CompletedProcess[str]:
+        jobs = yaml.safe_load((ROOT / ".github/workflows/build-linux.yml").read_text())["jobs"]
+        job = jobs[job_name]
+        step = next(s for s in job["steps"] if s.get("name", "").startswith("Package "))
+        package_script = self.work / ("package-debian.sh" if job_name == "deb" else "package-rhel.sh")
+        package_script.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$INVOCATION_OUTPUT"\n', encoding="utf-8")
+        package_script.chmod(0o755)
+        command = self.work / "package-step.sh"
+        command.write_text(step["run"], encoding="utf-8")
+        shell = step.get("shell", job.get("defaults", {}).get("run", {}).get("shell", "sh"))
+        return subprocess.run(
+            [shell, "-e", command.as_posix()], cwd=self.work,
+            env=dict(os.environ, RELEASE_TAG=tag, INVOCATION_OUTPUT=str(self.work / "arguments")),
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def test_release_tag_reaches_both_native_packagers(self) -> None:
+        for job in ("deb", "rpm"):
+            with self.subTest(job=job):
+                result = self.invoke(job, "7.25.6.42")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((self.work / "arguments").read_text().splitlines(),
+                                 ["7.25.6.42", "--arch", "all"])
+
+    def test_development_packaging_keeps_the_current_source(self) -> None:
+        for job in ("deb", "rpm"):
+            with self.subTest(job=job):
+                result = self.invoke(job, "")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual((self.work / "arguments").read_text().splitlines(),
+                                 ["--buildfrom", "3", "--arch", "all"])
+
+
+@unittest.skipUnless(shutil.which("dpkg-deb") and shutil.which("dpkg-architecture"),
+                     "Native Debian packaging tools are required")
+class DebianMetadataGate(ShellFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.dist = self.work / "dist/deb"
+        self.dist.mkdir(parents=True)
+        self.build_package("64", "amd64")
+        self.build_package("arm64", "arm64")
+
+    def build_package(self, asset_arch: str, architecture: str, version: str = "7.25.6.42",
+                      package: str = "v2rayn") -> Path:
+        stage = self.work / f"stage-{asset_arch}"
+        (stage / "DEBIAN").mkdir(parents=True, exist_ok=True)
+        (stage / "DEBIAN/control").write_text(
+            f"Package: {package}\nVersion: {version}\nArchitecture: {architecture}\n"
+            "Maintainer: Test <test@example.invalid>\nDescription: Metadata fixture\n",
+            encoding="utf-8",
+        )
+        archive = self.dist / f"v2rayN-linux-{asset_arch}.deb"
+        subprocess.run(["dpkg-deb", "-Zgzip", "--root-owner-group", "--build", str(stage), str(archive)],
+                       check=True, capture_output=True)
+        return archive
+
+    def publish(self, expected: str = "7.25.6.42",
+                fork_version: str = "0.0.0.0") -> tuple[subprocess.CompletedProcess[str], bool]:
+        # Execute the real steps between collection and the artifact upload.
+        job = yaml.safe_load((ROOT / ".github/workflows/build-linux.yml").read_text())["jobs"]["deb"]
+        collected = False
+        result = subprocess.CompletedProcess([], 0, "", "")
+        for step in job["steps"]:
+            if step.get("name") == "Collect DEBs into workspace":
+                collected = True
+                continue
+            if not collected:
+                continue
+            if step.get("uses", "").startswith("actions/upload-artifact@"):
+                return result, True
+            if "run" in step:
+                result = self.shell(step["run"], {
+                    "GITHUB_WORKSPACE": self.work.as_posix(), "RELEASE_TAG": expected,
+                    "FORK_VERSION": fork_version,
+                }, ROOT)
+                if result.returncode:
+                    return result, False
+        self.fail("The Debian job has no artifact upload")
+
+    def test_matching_metadata_for_both_architectures_can_reach_upload(self) -> None:
+        result, uploaded = self.publish()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(uploaded, result.stdout + result.stderr)
+
+    def test_wrong_version_on_either_architecture_blocks_upload(self) -> None:
+        for asset, architecture in (("64", "amd64"), ("arm64", "arm64")):
+            with self.subTest(architecture=architecture):
+                self.build_package(asset, architecture, "0.0.0")
+                result, uploaded = self.publish()
+                self.assertFalse(uploaded, result.stdout)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("0.0.0", result.stderr)
+                self.build_package(asset, architecture)
+
+    def test_missing_arm64_package_blocks_upload(self) -> None:
+        (self.dist / "v2rayN-linux-arm64.deb").unlink()
+        result, uploaded = self.publish()
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_wrong_architecture_blocks_upload(self) -> None:
+        self.build_package("arm64", "amd64")
+        result, uploaded = self.publish()
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Architecture", result.stderr)
+
+    def test_corrupt_package_blocks_upload(self) -> None:
+        (self.dist / "v2rayN-linux-arm64.deb").write_bytes(b"not a Debian archive")
+        result, uploaded = self.publish()
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_unexpected_package_blocks_upload(self) -> None:
+        self.build_package("extra", "amd64")
+        result, uploaded = self.publish()
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_wrong_package_identity_blocks_upload(self) -> None:
+        self.build_package("arm64", "arm64", package="unrelated")
+        result, uploaded = self.publish()
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Package", result.stderr)
+
+    def test_empty_expected_version_blocks_upload(self) -> None:
+        result, uploaded = self.publish("", "")
+        self.assertFalse(uploaded, result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_development_packages_are_checked_against_the_development_version(self) -> None:
+        self.build_package("64", "amd64", "0.0.0.0")
+        self.build_package("arm64", "arm64", "0.0.0.0")
+        result, uploaded = self.publish("")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(uploaded, result.stdout + result.stderr)
+
+    def test_production_packager_embeds_the_explicit_version_on_both_architectures(self) -> None:
+        source = (ROOT / "package-debian.sh").read_text(encoding="utf-8")
+        script = self.work / "package-debian.sh"
+        script.write_text(source.rsplit('main "$@"', 1)[0], encoding="utf-8", newline="\n")
+        result = self.shell(r'''
+source "$PACKAGE_SCRIPT"
+git() { return 1; }
+stage_runtime_assets() { :; }
+resolve_version
+PROJECT="$FIXTURE_ROOT/project/Desktop.csproj"
+OUTPUT_DIR="$FIXTURE_ROOT/output"
+mkdir -p "$OUTPUT_DIR"
+for spec in x64:linux-x64:amd64 arm64:linux-arm64:arm64; do
+  IFS=: read -r short rid architecture <<< "$spec"
+  publish="$FIXTURE_ROOT/project/bin/Release/net10.0/$rid/publish"
+  mkdir -p "$publish"
+  printf 'fixture\n' > "$publish/payload.txt"
+  package_binary "$short" "$rid" "$architecture"
+done
+''', {
+            "PACKAGE_SCRIPT": script.as_posix(), "FIXTURE_ROOT": self.work.as_posix(),
+            "FORK_VERSION": "7.25.6.42",
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for architecture in ("amd64", "arm64"):
+            archive = self.work / f"output/v2rayn_7.25.6.42_{architecture}.deb"
+            result = subprocess.run(["dpkg-deb", "--field", str(archive), "Version"],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "7.25.6.42")
+
+
 class FinalizerContract(ShellFixture):
     def setUp(self) -> None:
         super().setUp()

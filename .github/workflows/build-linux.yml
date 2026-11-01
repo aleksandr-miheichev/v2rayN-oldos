@@ -79,6 +79,7 @@ jobs:
     - name: Ensure script permissions
       run: chmod 755 package-debian.sh
     - name: Package DEB (Debian-family)
+      shell: bash
       run: |
         if [[ -n "$RELEASE_TAG" ]]; then
           ./package-debian.sh "$RELEASE_TAG" --arch all
@@ -93,6 +94,11 @@ jobs:
         find "$GITHUB_WORKSPACE/dist/deb" -name "v2rayn_*_arm64.deb" -exec mv {} "$GITHUB_WORKSPACE/dist/deb/v2rayN-linux-arm64.deb" \; || true
         echo "==== Dist tree ===="
         ls -R "$GITHUB_WORKSPACE/dist/deb" || true
+    - name: Verify DEB metadata
+      shell: bash
+      run: |
+        bash scripts/fork/verify-deb-metadata.sh \
+          "${RELEASE_TAG:-$FORK_VERSION}" "$GITHUB_WORKSPACE/dist/deb"
     - name: Upload DEB artifact
       uses: actions/upload-artifact@v7
       with: { name: release-deb, path: "dist/deb/**/*.deb", if-no-files-found: error }
@@ -150,6 +156,7 @@ jobs:
     - name: Ensure script permissions
       run: chmod 755 package-rhel.sh
     - name: Package RPM (RHEL-family)
+      shell: bash
       run: |
         if [[ -n "$RELEASE_TAG" ]]; then
           ./package-rhel.sh "$RELEASE_TAG" --arch all
