@@ -137,8 +137,14 @@ the Windows smoke: `Test-Windows.ps1 -Mode startup|update`). The independent `bu
 workflow runs these checks, Windows x64/ARM64 build/startup smoke (the self-update
 replacement/rollback smoke stays on win-x64), native Linux builds, and Linux container builds on
 relevant PRs and pushes to `master`; it can also be dispatched manually or called by a release
-workflow. Releases include Linux x64/ARM64/RISC-V 64/LoongArch 64 and Windows x64/ARM64 packages;
+workflow. Fork releases include Linux x64/ARM64 and Windows x64/ARM64 packages;
 Linux containers are built for amd64 and arm64.
+
+`Tests/Integration/test-full-zip-runtime.sh <full-install.zip>` defaults to `linux-x64`;
+set `WEBAPI_EXPECTED_RID=linux-arm64` when executing it on a native ARM64 runner. Setting
+`WEBAPI_GLIBC_BASELINE=2.34` additionally applies the fork ABI guard to both the unpacked install
+tree and the native libraries extracted by the single-file runtime. Both trees must contain
+ELF files and satisfy the glibc/DT_RELR checks before the test cleans up.
 
 `Tests/Integration/test-native-update-identity.py <previous-publish-dir> <candidate-publish-dir>`
 additionally exercises real native helper replacement and health-mismatch rollback with two
@@ -205,23 +211,27 @@ executable assumptions.
 `build-all.yml` ("release all platforms") dispatches the desktop platform workflows and calls
 `release-WebAPI.yml`; the WebAPI packages ride the same `upload-sign.yml` path and land in the same
 release as the desktop assets. `release-WebAPI.yml` can also be dispatched directly with a
-`release_tag` (`x.y.z`) to call `build-WebAPI.yml`, assemble and validate the Linux and Windows
+`release_tag` (`x.y.z.r` in this fork) to call `build-WebAPI.yml`, assemble and validate the Linux and Windows
 WebAPI assets, then sign and upload them through the existing `upload-sign.yml` workflow. Signing
 uses the repository GPG key, so a fork that runs this flow publishes with its own
 `GPG_PRIVATE_KEY` secret. `build-WebAPI.yml` can also be dispatched with a tag for package-only
 verification. Web release orchestration and artifact names are RID-based, separately from
-containers and Desktop workflows. riscv64 builds on RISC-V runners with the community .NET SDK;
-loongarch64 builds inside the QEMU loong64 VM with the official Loongson SDK; both run a native
-smoke before packaging. Windows x64/ARM64 have full-install and app-only update ZIPs; Windows
-containers are not built.
+containers and Desktop workflows. The fork publishes Linux x64/ARM64 and Windows x64/ARM64;
+the upstream RISC-V and LoongArch job definitions remain disabled. Windows containers are not built.
+
+The API self-update channel defaults to `aleksandr-miheichev/v2rayN-oldos`; explicit
+`WebRepository`/`V2RAYN_WEB_REPOSITORY` build overrides remain available. Release manifests accept
+canonical three- or four-part numeric versions; development suffixes are limited to local build
+identities and cannot become release tags or manifests.
+`WebVersion` also supplies the assembly and file version through the .NET SDK; local development
+suffixes remain in the informational identity while the assembly version stays numeric.
 
 The API release provides architecture-specific full-install and app-only update ZIPs plus
 `WebAPI-update.json`:
 
-- `v2rayN-linux-64-WebAPI.zip` / `v2rayN-linux-arm64-WebAPI.zip` / `v2rayN-linux-riscv64-WebAPI.zip`
-  / `v2rayN-linux-loong64-WebAPI.zip` — API, runtime files, `.env.example`, and Core bundle.
-- `v2rayN-linux-64-WebAPI-update.zip` / `v2rayN-linux-arm64-WebAPI-update.zip` /
-  `v2rayN-linux-riscv64-WebAPI-update.zip` / `v2rayN-linux-loong64-WebAPI-update.zip` — API
+- `v2rayN-linux-64-WebAPI.zip` / `v2rayN-linux-arm64-WebAPI.zip` — API, runtime files,
+  `.env.example`, and Core bundle.
+- `v2rayN-linux-64-WebAPI-update.zip` / `v2rayN-linux-arm64-WebAPI-update.zip` — API
   executable and build identity only; user data, Core files, credentials, and unrelated files are
   excluded.
 - `v2rayN-windows-64-WebAPI.zip` / `v2rayN-windows-arm64-WebAPI.zip` — Windows API, runtime/Core
