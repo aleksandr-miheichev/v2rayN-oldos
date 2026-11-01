@@ -16,12 +16,10 @@ name: verify macOS compatibility
 #      to find a window server on a build agent says nothing about whether
 #      the application is compatible with the operating system.
 #
-# Both packages are verified on macos-14, the oldest free runner that is still
-# actually scheduled: a macos-13 job once waited out the full 24-hour queue
-# limit without a runner ever picking it up, which also kept the whole run
-# "in progress" for a day and silenced the failure reporter. The x64 package
-# runs through Rosetta 2, which still exercises the real x64 slices of every
-# binary against this OS.
+# Both packages are verified on macos-15, the oldest available hosted runner.
+# macos-14 is in provider brownouts and retires on November 2, 2026.
+# The 13.6 deployment floor remains enforced below; runtime checks on 13.6
+# and 14 are unavailable in hosted CI. The x64 package runs through Rosetta 2.
 
 on:
   workflow_call:
@@ -47,10 +45,10 @@ jobs:
       matrix:
         include:
           # x64 runs on macos-15 because only Sequoia's Rosetta translates the
-          # AVX2 family that GOAMD64=v3 cores (mihomo) require; arm64 stays on
-          # macos-14 as the oldest runner that is still actually scheduled.
+          # AVX2 family that GOAMD64=v3 cores (mihomo) require; arm64 uses the
+          # same oldest available runner without translation.
           - { arch: x64, runner: macos-15, exec_prefix: "arch -x86_64" }
-          - { arch: arm64, runner: macos-14, exec_prefix: "" }
+          - { arch: arm64, runner: macos-15, exec_prefix: "" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:

@@ -133,6 +133,74 @@ class WorkflowGuards(ShellFixture):
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
 
+class AutoReleaseRecovery(ShellFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        git(self.work, "init", "--quiet")
+        (self.work / "v2rayN").mkdir()
+        (self.work / "v2rayN/Directory.Build.props").write_text(
+            "<Project><PropertyGroup><Version>7.25.6</Version></PropertyGroup></Project>\n",
+            encoding="utf-8",
+        )
+        (self.work / "product.cs").write_text("class Product { }\n", encoding="utf-8")
+        git(self.work, "add", ".")
+        git(self.work, "commit", "--quiet", "-m", "previous release")
+        git(self.work, "tag", "7.25.6.9")
+
+    def change(self, relative: str) -> None:
+        path = self.work / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("changed\n", encoding="utf-8")
+        git(self.work, "add", relative)
+        git(self.work, "commit", "--quiet", "-m", "new change")
+
+    def decide(self, *, event: str = "workflow_dispatch", allow: bool = False,
+               ignore_quiet: bool = True) -> dict[str, str]:
+        output = self.work / "output"
+        output.write_text("", encoding="utf-8")
+        script = workflow_step("auto-release.yml", "release", step_id="decide")
+        for expression, value in (
+            ("${{ github.event_name }}", event),
+            ("${{ inputs.allow_ci_only_recovery }}", str(allow).lower()),
+            ("${{ inputs.ignore_quiet_period }}", str(ignore_quiet).lower()),
+        ):
+            script = script.replace(expression, value)
+        result = self.shell(script, {"GITHUB_OUTPUT": output.as_posix(), "QUIET_MINUTES": "90"}, self.work)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_manual_recovery_can_replace_a_tag_after_ci_only_changes(self) -> None:
+        self.change(".github/workflows/verify-macos.yml")
+        values = self.decide(allow=True)
+        self.assertEqual(values["release"], "true")
+        self.assertEqual(values["tag"], "7.25.6.10")
+        self.assertEqual(values.get("recovery"), "true")
+
+    def test_ci_only_changes_still_wait_without_manual_recovery(self) -> None:
+        self.change(".github/workflows/verify-macos.yml")
+        self.assertEqual(self.decide()["release"], "false")
+
+    def test_schedule_cannot_enable_manual_recovery(self) -> None:
+        self.change(".github/workflows/verify-macos.yml")
+        self.assertEqual(self.decide(event="schedule", allow=True)["release"], "false")
+
+    def test_manual_recovery_does_not_bypass_the_quiet_period(self) -> None:
+        self.change(".github/workflows/verify-macos.yml")
+        self.assertEqual(self.decide(allow=True, ignore_quiet=False)["release"], "false")
+
+    def test_repeated_recovery_on_an_already_tagged_head_creates_nothing(self) -> None:
+        self.change(".github/workflows/verify-macos.yml")
+        git(self.work, "tag", "7.25.6.10")
+        self.assertEqual(self.decide(allow=True)["release"], "false")
+
+    def test_product_changes_keep_the_normal_release_path(self) -> None:
+        self.change("product.cs")
+        values = self.decide(event="schedule")
+        self.assertEqual(values["release"], "true")
+        self.assertEqual(values["tag"], "7.25.6.10")
+        self.assertEqual(values.get("recovery"), "false")
+
+
 class PatchWhitespaceGuard(ShellFixture):
     def setUp(self) -> None:
         super().setUp()
