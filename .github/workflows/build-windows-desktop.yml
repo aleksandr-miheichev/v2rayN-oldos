@@ -30,13 +30,15 @@ jobs:
     secrets: inherit
 
   build-aot:
+    # AOT remains upstream-only until it has oldos payload compatibility gates.
+    if: github.repository == '2dust/v2rayN'
     uses: ./.github/workflows/build.yml
     with:
       target: windows
       isAot: true
 
   release-aot-zip:
-    if: inputs.release_tag != ''
+    if: github.repository == '2dust/v2rayN' && inputs.release_tag != ''
     needs: build-aot
     uses: ./.github/workflows/package-zip.yml
     with:
