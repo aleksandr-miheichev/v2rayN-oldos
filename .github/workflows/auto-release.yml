@@ -22,6 +22,10 @@ on:
         description: Release even if upstream committed a moment ago.
         type: boolean
         default: false
+      allow_ci_only_recovery:
+        description: Allow a manual recovery release when only CI or documentation changed.
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -59,6 +63,7 @@ jobs:
           set -euo pipefail
 
           previous="$(git tag --list '[0-9]*.[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
+          recovery=false
           echo "previous=${previous}" >> "$GITHUB_OUTPUT"
           echo "Previous release tag: ${previous:-<none>}"
 
@@ -89,9 +94,13 @@ jobs:
               /^scripts\/fork\//                        { next }
               { print }')"
             if [[ -z "$product_changes" ]]; then
-              echo "release=false" >> "$GITHUB_OUTPUT"
-              echo "Only CI or documentation changed since ${previous}; the packages would be identical."
-              exit 0
+              if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ inputs.allow_ci_only_recovery }}" != "true" ]]; then
+                echo "release=false" >> "$GITHUB_OUTPUT"
+                echo "Only CI or documentation changed since ${previous}; the packages would be identical."
+                exit 0
+              fi
+              recovery=true
+              echo "Manual CI-only recovery after immutable tag ${previous}."
             fi
             echo "Files that change the product since ${previous}:"
             echo "$product_changes" | head -n 20
@@ -116,6 +125,7 @@ jobs:
           tag="${base}.${next_rev}"
 
           echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "recovery=$recovery" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Next release tag: ${tag}"
 
@@ -143,6 +153,10 @@ jobs:
           {
             cat notes-body.md
             printf '\n'
+            if [[ "${{ steps.decide.outputs.recovery }}" == "true" ]]; then
+              printf '### Release pipeline recovery\n\n'
+              printf 'This recovery build follows [%s](https://github.com/${{ github.repository }}/releases/tag/%s). See that release for the source changes retained here; this build adds CI/release-pipeline corrections and the full release gates still apply.\n\n' "$previous" "$previous"
+            fi
             printf -- '---\n\n'
             printf '### About this build\n\n'
             printf 'This is upstream [2dust/v2rayN](https://github.com/2dust/v2rayN) '
@@ -152,7 +166,7 @@ jobs:
             printf '**Supported systems:** Ubuntu 22.04 and newer, Debian 12 and newer, RHEL 9 and newer, macOS 13.6 and newer, Windows on x64, x86 and arm64.\n\n'
             printf 'Every release is blocked unless the packages install and the application starts on Ubuntu 22.04, Debian 12 and Rocky Linux 9, '
             printf 'no shipped binary requires a glibc newer than 2.34, '
-            printf 'and the macOS application launches with its native libraries loading on macOS 14 and 15.\n\n'
+            printf 'and native macOS packages are checked on macOS 15 with a 13.6 deployment floor.\n\n'
             printf 'Verify a download with the `.sig` file next to it and `v2rayN-public-key.asc` from this release.\n'
           } > notes.md
 
