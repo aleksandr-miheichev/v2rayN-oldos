@@ -143,6 +143,14 @@ jobs:
             empty_tree="$(git hash-object -t tree -w /dev/null)"
             git diff --check "$empty_tree" HEAD
           else
+            if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
+              || ! git merge-base --is-ancestor "$base_sha" HEAD; then
+              # A rebased push can orphan its old tip, which a fresh checkout
+              # does not fetch. Check every fork change against the approved
+              # upstream mirror instead of including unrelated upstream edits.
+              base_sha="$(git merge-base HEAD refs/remotes/origin/master)"
+              echo "Checking the fork overlay after rebase: $base_sha"
+            fi
             git diff --check "$base_sha...HEAD"
           fi
 
