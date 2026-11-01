@@ -28,7 +28,8 @@ it uses a SQLite build with a `GLIBC_2.34` baseline and declares dependency floo
 waiting for upstream to cut one. No release is published unless its packages have been installed and the
 application has been started on Ubuntu 22.04, Debian 12 and Rocky Linux 9, unless every shipped binary stays
 within the `GLIBC_2.34` baseline, and unless the macOS application launches and its native libraries load on
-macOS 14 and 15 with no shipped binary demanding a newer macOS than 13.6. Release notes are generated from the
+macOS 15, with the application's deployment floor kept at 13.6. Runtime checks on macOS 13.6 and 14 are
+unavailable in hosted CI. Release notes are generated from the
 commits that actually landed, and list changes that produced no commit at all — a dependency resolving to a new
 version, a rebuilt native library. A failed release files an issue against this repository by itself, with the
 failing job's own error messages in the body.
