@@ -10,16 +10,16 @@ name: verify macOS compatibility
 #      runs it -- and it is precisely what broke upstream, where the native
 #      SQLite library was built on macOS 15 with no deployment target and
 #      therefore refused to load on anything older;
-#   2. the native library actually loads and answers on a real machine of the
-#      oldest supported version. Loading it through ctypes rather than
+#   2. the native library actually loads and answers on a native machine of the
+#      oldest available hosted version. Loading it through ctypes rather than
 #      launching the interface keeps the check deterministic: a GUI failing
 #      to find a window server on a build agent says nothing about whether
 #      the application is compatible with the operating system.
 #
-# Both packages are verified on macos-15, the oldest available hosted runner.
-# macos-14 is in provider brownouts and retires on November 2, 2026.
+# Both packages are verified on macOS 15, the oldest available hosted version.
+# macos-14 retired on November 2, 2026.
 # The 13.6 deployment floor remains enforced below; runtime checks on 13.6
-# and 14 are unavailable in hosted CI. The x64 package runs through Rosetta 2.
+# and 14 are unavailable in hosted CI. Each package uses its native CPU.
 
 on:
   workflow_call:
@@ -44,10 +44,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x64 runs on macos-15 because only Sequoia's Rosetta translates the
-          # AVX2 family that GOAMD64=v3 cores (mihomo) require; arm64 uses the
-          # same oldest available runner without translation.
-          - { arch: x64, runner: macos-15, exec_prefix: "arch -x86_64" }
+          # Native Intel exposes the CPU features required by GOAMD64=v3 cores.
+          - { arch: x64, runner: macos-15-intel, exec_prefix: "" }
           - { arch: arm64, runner: macos-15, exec_prefix: "" }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -58,14 +56,6 @@ jobs:
 
       - name: Report the machine this runs on
         run: sw_vers && uname -m
-
-      - name: Make sure Rosetta 2 is present
-        if: matrix.arch == 'x64'
-        run: |
-          # The image normally carries it already; install only when it is gone.
-          if ! /usr/bin/pgrep -q oahd; then
-            sudo softwareupdate --install-rosetta --agree-to-license
-          fi
 
       - name: Download the built disk image
         uses: actions/download-artifact@v8
@@ -105,9 +95,7 @@ jobs:
           set -euo pipefail
           dylib="$(find v2rayN.app -name 'libe_sqlite3.dylib' -print -quit)"
           [[ -n "$dylib" ]] || { echo "::error::libe_sqlite3.dylib is missing from the bundle"; exit 1; }
-          # The system python at /usr/bin is a universal binary; the toolchain
-          # python that shadows it in PATH is arm64-only, and Rosetta answers
-          # "Bad CPU type in executable" when asked to run it as x86_64.
+          # The system Python follows the native architecture of this runner.
           ${{ matrix.exec_prefix }} /usr/bin/python3 - "$dylib" <<'PY'
           import ctypes, sys
 
@@ -140,12 +128,6 @@ jobs:
             local out
             if out="$(${{ matrix.exec_prefix }} "$bin" "$@" 2>&1)"; then
               echo "runs    ${bin#v2rayN.app/Contents/MacOS/}: ${out%%$'\n'*}"
-            elif [[ -n "${{ matrix.exec_prefix }}" && "$out" == *"AMD64 processors with v3"* ]]; then
-              # The binary started -- exec and dyld are past -- and tripped its
-              # own CPUID check against Rosetta's emulated CPU. Every real Intel
-              # Mac able to run macOS 13.6 has the v3 feature set, so this says
-              # nothing about OS compatibility.
-              echo "::warning::${bin#v2rayN.app/Contents/MacOS/} started, then refused Rosetta's CPU profile: ${out%%$'\n'*}"
             else
               echo "::error::${bin#v2rayN.app/Contents/MacOS/} cannot run on macOS $(sw_vers -productVersion): ${out%%$'\n'*}"
               failed=1
