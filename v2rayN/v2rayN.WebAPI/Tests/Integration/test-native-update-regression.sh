@@ -58,7 +58,7 @@ PY
   --configuration Release --runtime "${identity[3]}" --self-contained true \
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
   -p:WebVersion="${identity[0]}" -p:WebCommit="${identity[1]}" -p:WebBuildDate="${identity[2]}" \
-  -p:WebRepository="${V2RAYN_WEB_REPOSITORY:-${GITHUB_REPOSITORY:-2dust/v2rayN}}" \
+  -p:WebRepository="${V2RAYN_WEB_REPOSITORY:-${GITHUB_REPOSITORY:-aleksandr-miheichev/v2rayN-oldos}}" \
   -p:CustomBeforeMicrosoftCommonTargets="$scratch/layout.targets" \
   --output "$scratch/candidate"
 

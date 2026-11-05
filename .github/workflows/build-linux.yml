@@ -8,11 +8,11 @@ on:
         type: string
   push:
     branches:
-      - master
+      - patches
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
   build:
@@ -22,7 +22,10 @@ jobs:
 
   release-zip:
     if: inputs.release_tag != ''
-    needs: build
+    # The zip carries the same binaries as the packages, so it waits for the
+    # same gate: without this, a failed verification still shipped a signed
+    # zip into the prerelease that opt-in users auto-update from.
+    needs: [ build, verify ]
     uses: ./.github/workflows/package-zip.yml
     with:
       target: linux
@@ -30,13 +33,15 @@ jobs:
     secrets: inherit
 
   build-aot:
+    # AOT remains upstream-only until it has oldos payload compatibility gates.
+    if: github.repository == '2dust/v2rayN'
     uses: ./.github/workflows/build.yml
     with:
       target: linux
       isAot: true
 
   release-aot-zip:
-    if: inputs.release_tag != ''
+    if: github.repository == '2dust/v2rayN' && inputs.release_tag != ''
     needs: build-aot
     uses: ./.github/workflows/package-zip.yml
     with:
@@ -47,10 +52,19 @@ jobs:
 
   deb:
     name: build and release deb x64 & arm64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-26.04
+    # Exercise native packaging and its SDK on patches before creating a tag.
+    if: github.event_name == 'push' || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    # Deliberate pin: the container is the packaging environment, and its
+    # dpkg decides the .deb format floor -- change it consciously, the
+    # compatibility gate will judge the result.
     container: debian:13
-    env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
+    env:
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+      # Without this the assemblies keep the upstream three-component version,
+      # which is forever below the fork's four-component release tag -- so the
+      # updater offered every deb user a phantom update.
+      FORK_VERSION: "${{ inputs.release_tag || '0.0.0.0' }}"
     steps:
     - name: Prepare tools (Debian)
       shell: bash
@@ -62,10 +76,18 @@ jobs:
     - name: Checkout repo (for scripts)
       uses: actions/checkout@v7
       with: { submodules: 'recursive', fetch-depth: '0' }
+    - name: Apply the fork's submodule patches
+      run: bash scripts/fork/apply-fork-patches.sh
     - name: Ensure script permissions
       run: chmod 755 package-debian.sh
     - name: Package DEB (Debian-family)
-      run: ./package-debian.sh "${RELEASE_TAG}" --arch all
+      shell: bash
+      run: |
+        if [[ -n "$RELEASE_TAG" ]]; then
+          ./package-debian.sh "$RELEASE_TAG" --arch all
+        else
+          ./package-debian.sh --buildfrom 3 --arch all
+        fi
     - name: Collect DEBs into workspace
       run: |
         mkdir -p "$GITHUB_WORKSPACE/dist/deb"
@@ -74,16 +96,26 @@ jobs:
         find "$GITHUB_WORKSPACE/dist/deb" -name "v2rayn_*_arm64.deb" -exec mv {} "$GITHUB_WORKSPACE/dist/deb/v2rayN-linux-arm64.deb" \; || true
         echo "==== Dist tree ===="
         ls -R "$GITHUB_WORKSPACE/dist/deb" || true
+    - name: Verify DEB metadata
+      shell: bash
+      run: |
+        bash scripts/fork/verify-deb-metadata.sh \
+          "${RELEASE_TAG:-$FORK_VERSION}" "$GITHUB_WORKSPACE/dist/deb"
     - name: Upload DEB artifact
       uses: actions/upload-artifact@v7
       with: { name: release-deb, path: "dist/deb/**/*.deb", if-no-files-found: error }
 
   rpm:
     name: build and release rpm x64 & arm64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-    runs-on: ubuntu-26.04
+    if: github.event_name == 'push' || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    # Deliberate pin: the rpm toolchain of this container sets the package
+    # format floor -- change it consciously, the gate will judge the result.
     container: registry.access.redhat.com/ubi10/ubi
-    env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
+    env:
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+      # Same phantom-update prevention as in the deb job above.
+      FORK_VERSION: "${{ inputs.release_tag || '0.0.0.0' }}"
     steps:
     - name: Prepare tools (Red Hat)
       shell: bash
@@ -121,10 +153,18 @@ jobs:
     - name: Checkout repo (for scripts)
       uses: actions/checkout@v7
       with: { submodules: 'recursive', fetch-depth: '0' }
+    - name: Apply the fork's submodule patches
+      run: bash scripts/fork/apply-fork-patches.sh
     - name: Ensure script permissions
       run: chmod 755 package-rhel.sh
     - name: Package RPM (RHEL-family)
-      run: ./package-rhel.sh "${RELEASE_TAG}" --arch all
+      shell: bash
+      run: |
+        if [[ -n "$RELEASE_TAG" ]]; then
+          ./package-rhel.sh "$RELEASE_TAG" --arch all
+        else
+          ./package-rhel.sh --buildfrom 3 --arch all
+        fi
     - name: Collect RPMs into workspace
       run: |
         mkdir -p "$GITHUB_WORKSPACE/dist/rpm"
@@ -139,7 +179,7 @@ jobs:
 
   rpm-riscv64:
     name: build and release rpm riscv64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-24.04-riscv
     container: rockylinux/rockylinux:10
     env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
@@ -179,7 +219,7 @@ jobs:
 
   deb-riscv64:
     name: build and release deb riscv64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-24.04-riscv
     container: debian:13
     env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
@@ -220,7 +260,7 @@ jobs:
 
   deb-loong64:
     name: build and release deb loong64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-26.04
     env:
       RELEASE_TAG: ${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}
@@ -266,7 +306,7 @@ jobs:
 
   rpm-loong64:
     name: build and release rpm loong64
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-26.04
     env:
       RELEASE_TAG: ${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}
@@ -307,45 +347,64 @@ jobs:
     - name: Upload RPM artifact
       uses: actions/upload-artifact@v7
       with: { name: release-rpm-loong64, path: "dist/rpm-loong64/**/*.rpm", if-no-files-found: error }
+  verify:
+    name: verify compatibility with older systems
+    needs: [ deb, rpm ]
+    uses: ./.github/workflows/verify-compat.yml
+    with:
+      release_tag: "${{ inputs.release_tag }}"
+
+  publish-manifest:
+    name: attach the build manifest to the release
+    if: inputs.release_tag != ''
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download the build manifest
+      uses: actions/download-artifact@v8
+      with: { name: build-manifest, path: dist }
+    # The manifest is what lets the next release report changes that never
+    # produced a commit, so it travels with the release rather than expiring
+    # with the workflow artifacts.
+    - name: Upload the build manifest to the release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        file: dist/manifest.json
+        tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
+        prerelease: true
+        overwrite: true
 
   release-deb:
     name: sign and upload deb x64 arm64
-    needs: deb
+    if: inputs.release_tag != ''
+    needs: [ deb, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-deb, file_pattern: "*.deb" }
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
   release-rpm:
     name: sign and upload rpm x64 arm64
-    needs: rpm
+    if: inputs.release_tag != ''
+    needs: [ rpm, verify ]
     uses: ./.github/workflows/upload-sign.yml
     with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm, file_pattern: "*.rpm" }
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
-  release-rpm-riscv64:
-    name: sign and upload rpm riscv64
-    needs: rpm-riscv64
-    uses: ./.github/workflows/upload-sign.yml
-    with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm-riscv64, file_pattern: "*.rpm" }
-    secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
-  release-deb-riscv64:
-    name: sign and upload deb riscv64
-    needs: deb-riscv64
-    uses: ./.github/workflows/upload-sign.yml
-    with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-deb-riscv64, file_pattern: "*.deb" }
-    secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
-
-  release-deb-loong64:
-    name: sign and upload deb loong64
-    needs: deb-loong64
-    uses: ./.github/workflows/upload-sign.yml
-    with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-deb-loong64, file_pattern: "*.deb" }
-    secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
-
-  release-rpm-loong64:
-    name: sign and upload rpm loong64
-    needs: rpm-loong64
-    uses: ./.github/workflows/upload-sign.yml
-    with: { release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}", artifact_name: release-rpm-loong64, file_pattern: "*.rpm" }
-    secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
+  nudge-finalize:
+    name: ask the finalizer to look now
+    if: inputs.release_tag != ''
+    needs: [ release-zip, release-deb, release-rpm, publish-manifest ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch finalize-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Completion events of token-dispatched runs are never delivered
+          # (recursion prevention), so promotion used to wait for a cron tick
+          # -- up to half an hour of a complete release sitting as a
+          # prerelease. workflow_dispatch is the one event the default token
+          # may create, so the build asks the finalizer to look right now.
+          gh workflow run finalize-release.yml --ref oldos

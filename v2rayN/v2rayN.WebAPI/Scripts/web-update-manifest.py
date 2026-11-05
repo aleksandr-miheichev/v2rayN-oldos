@@ -42,7 +42,7 @@ WINDOWS_PE_MACHINES = {
 }
 MAX_ARCHIVE_ENTRIES = 10000
 MAX_EXPANDED_ARCHIVE_BYTES = 1024 * 1024 * 1024
-VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$")
 OFFICIAL_URL_RE = re.compile(
     r"^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+/releases/download/(?P<tag>[^/]+)/(?P<asset>[^/]+)$"
@@ -220,7 +220,7 @@ def package_entry(dist: Path, repository: str, version: str, rid: str) -> dict:
 
 def build_manifest(dist: Path, version: str, repository: str, commit: str, build_date: str) -> dict:
     if not VERSION_RE.match(version):
-        fail(f"official release versions must be x.y.z, got: {version}")
+        fail(f"official release versions must be canonical x.y.z or x.y.z.r, got: {version}")
     if not REPOSITORY_RE.match(repository):
         fail(f"invalid release repository: {repository}")
     if not commit or commit == "unknown":
