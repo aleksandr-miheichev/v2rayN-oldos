@@ -152,6 +152,8 @@ jobs:
             --description "A release was blocked by a failing job" 2>/dev/null || true
           gh label create pr-check-failure --color FBCA04 \
             --description "A pull request check failed" 2>/dev/null || true
+          gh label create ci-check-failure --color FBCA04 \
+            --description "A development branch check failed" 2>/dev/null || true
 
           # Every issue, read once. The duplicate check below must see the
           # issue of every run still in the 24-hour window, and a lasting
@@ -202,6 +204,12 @@ jobs:
               label="pr-check-failure"
               pr_number="$(jq -r '(.pull_requests[0].number)? // empty' <<<"$run_json")"
               title="PR check failed: ${name} (run #${run_id})"
+            elif [[ "$workflow_file" == "build-WebAPI.yml" && "$event" == "push" && "$branch" == "patches" ]]; then
+              # This workflow validates patch pushes with an empty release tag.
+              # The publishing wrapper and other workflows keep their release route.
+              label="ci-check-failure"
+              pr_number=""
+              title="CI check failed: ${name} (run #${run_id})"
             else
               label="release-failure"
               pr_number=""
@@ -258,6 +266,8 @@ jobs:
                 printf '%s failed on a pull request run -- a check on incoming changes, not the release pipeline.\n\n' "${the_workflow^}"
               elif [[ "$conclusion" == "startup_failure" ]]; then
                 printf 'GitHub could not start %s, so none of its jobs ran.\n\n' "$the_workflow"
+              elif [[ "$label" == "ci-check-failure" ]]; then
+                printf '%s did not complete successfully while checking the patch branch.\n\n' "${the_workflow^}"
               elif [[ -n "$timeouts" ]]; then
                 printf '%s ran out of time, so this release was not published.\n\n' "${the_workflow^}"
               else
@@ -338,6 +348,13 @@ jobs:
                 printf 'No release was affected: this run checked a pull request, and nothing ships from a pull request until it merges.\n\n'
                 printf 'Re-run the failed check from the pull request once the cause is addressed, or close the pull request to decline the change.\n\n'
                 printf 'Close this issue once the check is green or the pull request is closed.\n'
+              } >> "$body_file"
+            elif [[ "$label" == "ci-check-failure" ]]; then
+              {
+                printf '\n## What this means\n\n'
+                printf 'This development push checks the patch branch and does not publish a release.\n\n'
+                printf 'Address the failed check on `patches` and verify a commit containing the fix.\n\n'
+                printf 'Close this issue once that check passes.\n'
               } >> "$body_file"
             else
               {
