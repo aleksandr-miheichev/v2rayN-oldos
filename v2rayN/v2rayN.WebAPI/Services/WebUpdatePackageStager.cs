@@ -324,6 +324,6 @@ internal static partial class WebUpdatePackageStager
         if (copied != expectedLength) throw new InvalidDataException("A Web package archive entry was truncated.");
     }
 
-    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?(?:-[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant)]
     private static partial Regex VersionPattern();
 }
