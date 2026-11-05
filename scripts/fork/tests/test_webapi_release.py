@@ -772,5 +772,32 @@ class FinalizerContract(ShellFixture):
         self.assertEqual(values.get("ready"), "false", result.stdout)
 
 
+class MacCoreRuntimeGate(ShellFixture):
+    def run_cores(self, reject_mihomo: bool) -> subprocess.CompletedProcess[str]:
+        for relative in ("xray/xray", "sing_box/sing-box", "mihomo/mihomo"):
+            target = self.work / "v2rayN.app/Contents/MacOS/bin" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            rejects_cpu = reject_mihomo and relative == "mihomo/mihomo"
+            message = "AMD64 processors with v3 microarchitecture support" if rejects_cpu else "fixture core version"
+            target.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' '{message}'\nexit {int(rejects_cpu)}\n",
+                encoding="utf-8", newline="\n",
+            )
+        script = workflow_step("verify-macos.yml", "package", name="Run every bundled core on this macOS")
+        script = script.replace("${{ matrix.exec_prefix }}", "prefix_stub")
+        return self.shell('prefix_stub() { "$@"; }\nsw_vers() { echo 15.8.2; }\n' + script, {})
+
+    def test_cpu_refusal_is_a_failed_core_startup(self) -> None:
+        result = self.run_cores(reject_mihomo=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("::error::bin/mihomo/mihomo cannot run", result.stdout)
+
+    def test_all_three_successful_core_startups_pass(self) -> None:
+        result = self.run_cores(reject_mihomo=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for relative in ("bin/xray/xray", "bin/sing_box/sing-box", "bin/mihomo/mihomo"):
+            self.assertIn(f"runs    {relative}:", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
