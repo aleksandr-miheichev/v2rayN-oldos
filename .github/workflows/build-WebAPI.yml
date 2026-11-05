@@ -63,7 +63,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.x'
+          global-json-file: global.json
       - name: Run ServiceLib.Tests
         run: dotnet test --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release
       - name: Run WebAPI.Tests
