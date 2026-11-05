@@ -189,7 +189,7 @@ jobs:
 
   deb-x86:
     name: build and release deb x86
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-26.04
     container: debian:13
     env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
@@ -224,7 +224,7 @@ jobs:
 
   rpm-x86:
     name: build and release rpm x86
-    if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    if: github.repository == '2dust/v2rayN' && ((github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-26.04
     container: registry.access.redhat.com/ubi10/ubi
     env: { RELEASE_TAG: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}" }
