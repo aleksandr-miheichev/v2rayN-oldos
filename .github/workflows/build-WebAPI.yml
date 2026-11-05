@@ -125,7 +125,7 @@ jobs:
       - name: Verify fork release guards against local fixtures
         run: |
           python3 -m pip install 'PyYAML==6.0.3'
-          python3 scripts/fork/tests/test_webapi_release.py
+          python3 -m unittest discover -s scripts/fork/tests -v
       - name: Verify API build, backend and ServiceLib tests, native startup and package boundaries
         run: bash v2rayN/v2rayN.WebAPI/Scripts/verify.sh "$RUNNER_TEMP/v2rayN.WebAPI-verify"
       - name: Check patch whitespace
