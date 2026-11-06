@@ -15,11 +15,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: patches
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Update Certificate
         run: |
@@ -28,6 +30,7 @@ jobs:
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v8
         with:
+          base: patches
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "Update certificate"
           title: "Update certificate"
