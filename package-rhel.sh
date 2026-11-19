@@ -130,7 +130,8 @@ install_dependencies() {
   if command -v dnf >/dev/null 2>&1; then
     sudo dnf -y install \
       rpm-build rpmdevtools curl unzip tar jq rsync ca-certificates git \
-      desktop-file-utils wget libicu \`n      glibc libgcc openssl-libs libstdc++ tzdata krb5-libs
+      desktop-file-utils wget libicu \
+      glibc libgcc openssl-libs libstdc++ tzdata krb5-libs
 
     case "$HOST_ARCH" in
       x86_64|aarch64)
