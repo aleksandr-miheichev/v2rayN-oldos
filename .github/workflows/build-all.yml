@@ -109,7 +109,8 @@ jobs:
             }"
 
       - name: Trigger build windows package
-        if: inputs.release_tag != ''
+        # The upstream installer builds from master and accepts three-part tags.
+        if: github.repository == '2dust/v2rayN' && inputs.release_tag != ''
         run: |
           curl -X POST \
             -H "Accept: application/vnd.github.v3+json" \
