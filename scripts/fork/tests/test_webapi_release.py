@@ -366,6 +366,10 @@ cd "$FIXTURE_ROOT"
 export FORK_DOTNET_ROOT="$PWD/sdk" PATH="$PWD/bin:$PATH" FIXTURE_INSTALLER="$PWD/installer.sh"
 sudo() {
   if [[ "$1" == dnf && "$REQUIRE_SDK_DEPS" == 1 ]]; then
+    local dependency
+    for dependency in "${@:4}"; do
+      [[ "$dependency" =~ ^[a-zA-Z0-9][a-zA-Z0-9._+-]*$ ]] || { echo "Invalid RPM dependency: $dependency" >&2; return 93; }
+    done
     for dependency in glibc libgcc ca-certificates openssl-libs libstdc++ libicu tzdata krb5-libs; do
       [[ " $* " == *" $dependency "* ]] || { echo "Missing SDK dependency: $dependency" >&2; return 94; }
     done
