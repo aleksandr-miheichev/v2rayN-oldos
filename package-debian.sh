@@ -20,8 +20,6 @@ SKIASHARP_BASE="${SKIASHARP_BASE:-https://github.com/autorepobot/SkiaSharp-ppc64
 SkiaSharp_VERSION="${SkiaSharp_VERSION:-3.119.4}"
 HarfBuzzSharp_VERSION="${HarfBuzzSharp_VERSION:-8.3.1.5}"
 
-DOTNET_SDK_VERSION="${DOTNET_SDK_VERSION:-10.0.115}"
-
 DOTNET_RISCV_VERSION="${DOTNET_RISCV_VERSION:-10.0.115}"
 DOTNET_RISCV_BASE="${DOTNET_RISCV_BASE:-https://github.com/autorepobot/dotnet-riscv/releases/download}"
 DOTNET_RISCV_FILE="dotnet-sdk-${DOTNET_RISCV_VERSION}-linux-riscv64.tar.gz"
@@ -716,21 +714,25 @@ describe_target() {
 
 publish_binary() {
   local rid="$1"
+  local publish_args=()
 
   dotnet clean "$PROJECT" -c Release
   rm -rf "$(dirname "$PROJECT")/bin/Release/net10.0" || true
-  dotnet restore "$PROJECT" \
-    -r "$rid" \
-    --source "$NUGET_CACHE_DIR" \
-    --source "https://api.nuget.org/v3/index.json"
+
+  if [[ -n "$NUGET_CACHE_DIR" ]]; then
+    dotnet restore "$PROJECT" \
+      -r "$rid" \
+      --source "$NUGET_CACHE_DIR" \
+      --source "https://api.nuget.org/v3/index.json"
+    publish_args+=(--no-restore)
+  fi
+
   dotnet publish "$PROJECT" \
     -c Release \
     -r "$rid" \
-    --source "$NUGET_CACHE_DIR" \
-    --source "https://api.nuget.org/v3/index.json" \
     -p:PublishSingleFile=false \
     -p:SelfContained=true \
-    --no-restore
+    "${publish_args[@]}"
 }
 
 write_launcher_file() {
@@ -920,7 +922,7 @@ EOF
 
 select_targets() {
   case "${ARCH_OVERRIDE:-}" in
-    all)                 printf '%s\n' x64 arm64 riscv64 ppc64le loong64 ;;
+    all)                 printf '%s\n' x64 arm64 ;;
     x64|amd64)           printf '%s\n' x64 ;;
     arm64|aarch64)       printf '%s\n' arm64 ;;
     riscv64)             printf '%s\n' riscv64 ;;
@@ -982,12 +984,15 @@ main() {
   prepare_workspace
   resolve_version
 
-  download_nuget_packages || die "Failed to download prebuilt NuGet packages."
-
   mapfile -t targets < <(select_targets)
   [[ "${ARCH_OVERRIDE:-}" == "all" ]] && BUILT_ALL=1 || BUILT_ALL=0
 
   for arch in "${targets[@]}"; do
+    case "$arch" in
+      riscv64|ppc64le|loong64)
+        download_nuget_packages || die "Failed to download prebuilt NuGet packages."
+        ;;
+    esac
     build_one_target "$arch"
   done
 
