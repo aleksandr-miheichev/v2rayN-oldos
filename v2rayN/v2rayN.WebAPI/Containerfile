@@ -1,8 +1,9 @@
 ARG RID=linux-x64
 ARG WEB_VERSION=0.0.0-dev
+ARG FORK_VERSION=
 ARG WEB_COMMIT=unknown
 ARG WEB_BUILD_DATE=unknown
-ARG WEB_REPOSITORY=2dust/v2rayN
+ARG WEB_REPOSITORY=aleksandr-miheichev/v2rayN-oldos
 
 FROM --platform=$BUILDPLATFORM docker.io/library/alpine:3.22 AS core-assets
 ARG RID
@@ -10,13 +11,15 @@ RUN apk add --no-cache ca-certificates curl unzip
 COPY v2rayN/v2rayN.WebAPI/Scripts/fetch-core-bundle.sh /usr/local/bin/fetch-core-bundle
 RUN sh /usr/local/bin/fetch-core-bundle "$RID" /out/bin
 
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:afd0ccff9d306812a69ef0f47458376b6acb544ae866cfc4b8d28ff0eef35ea7 AS publish
 ARG RID
 ARG WEB_VERSION
+ARG FORK_VERSION
 ARG WEB_COMMIT
 ARG WEB_BUILD_DATE
 ARG WEB_REPOSITORY
 WORKDIR /src
+COPY global.json ./
 COPY v2rayN/ ./v2rayN/
 RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.WebAPI/v2rayN.WebAPI.csproj \
     --configuration Release \
@@ -25,6 +28,7 @@ RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.WebAPI/v2ra
     -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true \
     -p:WebVersion="$WEB_VERSION" \
+    -p:FORK_VERSION="$FORK_VERSION" \
     -p:WebCommit="$WEB_COMMIT" \
     -p:WebBuildDate="$WEB_BUILD_DATE" \
     -p:WebRepository="$WEB_REPOSITORY" \
