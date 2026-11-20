@@ -8,6 +8,7 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
     private readonly int patch;
     private readonly string? prerelease;
     private readonly string raw;
+    private readonly int revision;
 
     public SemanticVersion(int major, int minor, int patch)
     {
@@ -57,6 +58,7 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
                     major = int.Parse(parts[0]);
                     minor = int.Parse(parts[1]);
                     patch = int.Parse(parts[2]);
+                    revision = parts.Length == 4 ? int.Parse(parts[3]) : 0;
                     break;
 
                 default:
@@ -82,7 +84,7 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
         {
             return true;
         }
-        return major == other.major && minor == other.minor && patch == other.patch && prerelease == other.prerelease;
+        return major == other.major && minor == other.minor && patch == other.patch && revision == other.revision && prerelease == other.prerelease;
     }
 
     public static bool TryParse(string? version, out SemanticVersion? result)
@@ -106,7 +108,7 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
 
     public override int GetHashCode()
     {
-        return HashCode.Combine(major, minor, patch, prerelease);
+        return HashCode.Combine(major, minor, patch, revision, prerelease);
     }
 
     public override string ToString()
@@ -122,6 +124,10 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
             sb.Append(prefix);
         }
         sb.Append($"{major}.{minor}.{patch}");
+        if (revision != 0)
+        {
+            sb.Append($".{revision}");
+        }
         if (!string.IsNullOrEmpty(prerelease))
         {
             sb.Append($"-{prerelease}");
@@ -168,6 +174,10 @@ public class SemanticVersion : IEquatable<SemanticVersion>, IComparable
         if (patch != other.patch)
         {
             return patch.CompareTo(other.patch);
+        }
+        if (revision != other.revision)
+        {
+            return revision.CompareTo(other.revision);
         }
         return ComparePreRelease(prerelease, other.prerelease);
     }
