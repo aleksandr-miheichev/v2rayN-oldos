@@ -129,10 +129,21 @@ jobs:
       run: dotnet publish ./AmazTool/AmazTool.csproj -c Release -r $RID -p:SelfContained=true -p:PublishTrimmed=true $ExtOpt ${{ env.DOTNET_AOT_ARG }} -o ${{ env.OUTPUT }}
 
     - name: Build v2rayN WPF
+      id: publish-wpf
       shell: bash
       if: inputs.project == './v2rayN.Windows/v2rayN.Windows.csproj'
       working-directory: ./v2rayN
       run: dotnet publish $Project -c Release -r $RID -p:SelfContained=true $ExtOpt -o ${{ env.OUTPUT }}
+
+    - name: Verify WPF tray icon resources
+      if: steps.publish-wpf.outcome == 'success'
+      shell: pwsh
+      working-directory: ./v2rayN
+      run: |
+        $assembly = dotnet msbuild $env:Project -nologo -p:Configuration=Release -p:RuntimeIdentifier=$env:RID -p:SelfContained=true -getProperty:TargetPath
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $designer = Join-Path (Split-Path $env:Project) 'Properties/Resources.Designer.cs'
+        & ../scripts/fork/verify-wpf-resources.ps1 -AssemblyPath $assembly -ResourceDesignerPath $designer
 
     - name: Build v2rayN Avalonia
       shell: bash
