@@ -25,4 +25,12 @@
     <InformationalVersion>$(FORK_VERSION)</InformationalVersion>
   </PropertyGroup>
 
+  <!-- Keep the legacy GLIBC_2.34 SQLite provider out of upstream's package files. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'ServiceLib' and '@(PackageReference->WithMetadataValue('Identity', 'Repobot.SQLite.Unofficial'))' != ''">
+    <PackageReference Remove="Repobot.SQLite.Unofficial" />
+    <PackageReference Include="SourceGear.sqlite3" Condition="'@(PackageReference->WithMetadataValue('Identity', 'SourceGear.sqlite3'))' == ''" />
+    <PackageVersion Remove="SourceGear.sqlite3" />
+    <PackageVersion Include="SourceGear.sqlite3" Version="3.53.4" />
+  </ItemGroup>
+
 </Project>
