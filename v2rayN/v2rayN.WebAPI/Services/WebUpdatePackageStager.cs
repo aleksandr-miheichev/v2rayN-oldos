@@ -399,6 +399,6 @@ internal static partial class WebUpdatePackageStager
         }
     }
 
-    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:\\.(0|[1-9][0-9]*))?(?:-[0-9A-Za-z.-]+)?$", RegexOptions.CultureInvariant)]
     private static partial Regex VersionPattern();
 }
