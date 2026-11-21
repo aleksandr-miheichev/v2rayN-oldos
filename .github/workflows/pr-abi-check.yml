@@ -14,6 +14,7 @@ on:
   pull_request:
     paths:
       - 'v2rayN/Directory.Packages.props'
+      - 'v2rayN/Directory.Build.targets'
       - 'v2rayN/**/*.csproj'
       - 'scripts/fork/check-abi-baseline.sh'
   workflow_dispatch:
