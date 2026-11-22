@@ -20,8 +20,6 @@ SKIASHARP_BASE="${SKIASHARP_BASE:-https://github.com/autorepobot/SkiaSharp-ppc64
 SkiaSharp_VERSION="${SkiaSharp_VERSION:-3.119.4}"
 HarfBuzzSharp_VERSION="${HarfBuzzSharp_VERSION:-8.3.1.5}"
 
-DOTNET_SDK_VERSION="${DOTNET_SDK_VERSION:-10.0.115}"
-
 DOTNET_RISCV_VERSION="${DOTNET_RISCV_VERSION:-10.0.115}"
 DOTNET_RISCV_BASE="${DOTNET_RISCV_BASE:-https://github.com/autorepobot/dotnet-riscv/releases/download}"
 DOTNET_RISCV_FILE="dotnet-sdk-${DOTNET_RISCV_VERSION}-linux-riscv64.tar.gz"
@@ -133,18 +131,16 @@ install_dependencies() {
     sudo dnf -y install \
       rpm-build rpmdevtools curl unzip tar jq rsync ca-certificates git \
       desktop-file-utils wget libicu \
-      && install_ok=1
+      glibc libgcc openssl-libs libstdc++ tzdata krb5-libs
 
     case "$HOST_ARCH" in
       x86_64|aarch64)
-        wget -q https://dot.net/v1/dotnet-install.sh
-        chmod +x dotnet-install.sh
-        ./dotnet-install.sh \
-          --version "$DOTNET_SDK_VERSION" \
-          --install-dir "$HOME/.dotnet"
-
-        export PATH="$HOME/.dotnet:$PATH"
-        export DOTNET_ROOT="$HOME/.dotnet"
+        local script_root
+        script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+        bash "$script_root/scripts/fork/install-dotnet-sdk.sh"
+        DOTNET_ROOT="$(cd "${FORK_DOTNET_ROOT:-"$HOME/.dotnet"}" && pwd)"
+        export DOTNET_ROOT
+        export PATH="$DOTNET_ROOT:$PATH"
 
         dotnet --info >/dev/null 2>&1 && install_ok=1
         ;;
@@ -295,7 +291,7 @@ apply_channel_or_keep() {
 
   if [[ "$ch" == "keep" ]]; then
     echo "[*] Keep current repository state (no checkout)."
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')"
+    VERSION="${FORK_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo '0.0.0+git')}"
     VERSION="${VERSION#v}"
     return 0
   fi
@@ -680,21 +676,25 @@ describe_target() {
 
 publish_binary() {
   local rid="$1"
+  local publish_args=()
 
   dotnet clean "$PROJECT" -c Release
   rm -rf "$(dirname "$PROJECT")/bin/Release/net10.0" || true
-  dotnet restore "$PROJECT" \
-    -r "$rid" \
-    --source "$NUGET_CACHE_DIR" \
-    --source "https://api.nuget.org/v3/index.json"
+
+  if [[ -n "$NUGET_CACHE_DIR" ]]; then
+    dotnet restore "$PROJECT" \
+      -r "$rid" \
+      --source "$NUGET_CACHE_DIR" \
+      --source "https://api.nuget.org/v3/index.json"
+    publish_args+=(--no-restore)
+  fi
+
   dotnet publish "$PROJECT" \
     -c Release \
     -r "$rid" \
-    --source "$NUGET_CACHE_DIR" \
-    --source "https://api.nuget.org/v3/index.json" \
     -p:PublishSingleFile=false \
     -p:SelfContained=true \
-    --no-restore
+    "${publish_args[@]}"
 }
 
 write_spec_file() {
@@ -717,13 +717,16 @@ ExclusiveArch:  aarch64 x86_64 riscv64 ppc64le loongarch64
 Source0:        __PKGROOT__.tar.gz
 
 Requires:       cairo, pango, openssl, mesa-libEGL, mesa-libGL
-Requires:       glibc >= 2.39
-Requires:       fontconfig >= 2.15.0
+Requires:       glibc >= 2.34
+Requires:       fontconfig >= 2.13.1
 Requires:       desktop-file-utils >= 0.26
 Requires:       xdg-utils >= 1.1.3
-Requires:       coreutils >= 9.4
-Requires:       bash >= 5.2.21
-Requires:       freetype >= 2.13
+Requires:       coreutils >= 8.32
+Requires:       bash >= 5.1
+Requires:       freetype >= 2.10
+# Loaded with dlopen by the .NET runtime, so the automatic requires cannot see
+# it; without it the application dies at startup with FailFast.
+Requires:       libicu
 
 %description
 v2rayN Linux for Red Hat Enterprise Linux
@@ -855,7 +858,7 @@ package_binary() {
 
 select_targets() {
   case "${ARCH_OVERRIDE:-}" in
-    all)                 printf '%s\n' x64 arm64 riscv64 ppc64le loong64 ;;
+    all)                 printf '%s\n' x64 arm64 ;;
     x64|amd64)           printf '%s\n' x64 ;;
     arm64|aarch64)       printf '%s\n' arm64 ;;
     riscv64)             printf '%s\n' riscv64 ;;
@@ -920,12 +923,15 @@ main() {
   prepare_workspace
   resolve_version
 
-  download_nuget_packages || die "Failed to download prebuilt NuGet packages."
-
   mapfile -t targets < <(select_targets)
   [[ "${ARCH_OVERRIDE:-}" == "all" ]] && BUILT_ALL=1 || BUILT_ALL=0
 
   for arch in "${targets[@]}"; do
+    case "$arch" in
+      riscv64|ppc64le|loong64)
+        download_nuget_packages || die "Failed to download prebuilt NuGet packages."
+        ;;
+    esac
     build_one_target "$arch"
   done
 
