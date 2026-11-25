@@ -205,6 +205,7 @@ class PatchWhitespaceGuard(ShellFixture):
     def setUp(self) -> None:
         super().setUp()
         git(self.work, "init", "--quiet")
+        self.upstream = self.work / ".git/upstream"
         shutil.copyfile(ROOT / ".gitattributes", self.work / ".gitattributes")
         git(self.work, "add", ".gitattributes")
         git(self.work, "commit", "--quiet", "-m", "fixture attributes")
@@ -217,7 +218,7 @@ class PatchWhitespaceGuard(ShellFixture):
         git(self.work, "add", relative)
         git(self.work, "commit", "--quiet", "-m", "fixture change")
         script = workflow_step("build-WebAPI.yml", "verify", name="Check patch whitespace")
-        return self.shell(script, {"BASE_SHA": base_sha}, self.work)
+        return self.shell(script, {"BASE_SHA": base_sha, "UPSTREAM_REPOSITORY": str(self.upstream)}, self.work)
 
     def prepare_rebased_push(self) -> str:
         (self.work / "old-fork.txt").write_text("old fork\n", encoding="utf-8")
@@ -227,11 +228,14 @@ class PatchWhitespaceGuard(ShellFixture):
             ["git", "-C", str(self.work), "rev-parse", "HEAD"], text=True,
         ).strip()
         git(self.work, "checkout", "--quiet", "--detach", "HEAD^")
+        git(self.work, "update-ref", "refs/remotes/origin/master", "HEAD")
         # Existing upstream whitespace is outside the fork's contribution.
         (self.work / "upstream.cs").write_text("class Upstream { } \n", encoding="utf-8")
         git(self.work, "add", "upstream.cs")
-        git(self.work, "commit", "--quiet", "-m", "approved upstream")
-        git(self.work, "update-ref", "refs/remotes/origin/master", "HEAD")
+        git(self.work, "commit", "--quiet", "-m", "upstream ahead of the mirror")
+        self.upstream.mkdir()
+        git(self.upstream, "init", "--quiet", "--bare")
+        git(self.work, "push", "--quiet", str(self.upstream), "HEAD:refs/heads/master")
         return before
 
     def test_missing_before_commit_checks_the_complete_fork_overlay(self) -> None:
@@ -251,7 +255,7 @@ class PatchWhitespaceGuard(ShellFixture):
         self.assertIn("v2rayN/Example.cs", result.stdout)
         self.assertIn("trailing whitespace", result.stdout)
 
-    def test_missing_before_and_missing_mirror_fail_closed(self) -> None:
+    def test_missing_before_and_unavailable_upstream_fail_closed(self) -> None:
         result = self.check_added_file("v2rayN/Example.cs", "class Example { }\n", "f" * 40)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
