@@ -133,6 +133,7 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          UPSTREAM_REPOSITORY: https://github.com/2dust/v2rayN.git
         run: |
           set -euo pipefail
           base_sha="$BASE_SHA"
@@ -145,10 +146,10 @@ jobs:
           else
             if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
               || ! git merge-base --is-ancestor "$base_sha" HEAD; then
-              # A rebased push can orphan its old tip, which a fresh checkout
-              # does not fetch. Check every fork change against the approved
-              # upstream mirror instead of including unrelated upstream edits.
-              base_sha="$(git merge-base HEAD refs/remotes/origin/master)"
+              # A rebased push can orphan its old tip. The mirror can also
+              # trail the upstream commit that has already reached the product.
+              git fetch --quiet --no-tags --no-recurse-submodules "$UPSTREAM_REPOSITORY" refs/heads/master
+              base_sha="$(git merge-base HEAD FETCH_HEAD)"
               echo "Checking the fork overlay after rebase: $base_sha"
             fi
             git diff --check "$base_sha...HEAD"
@@ -933,6 +934,7 @@ jobs:
             WEB_REPOSITORY=${{ github.repository }}
             WEB_COMMIT=${{ github.sha }}
             WEB_BUILD_DATE=${{ needs.identity.outputs.build_date }}
+          outputs: type=cacheonly
           push: false
 
   release-assets:
