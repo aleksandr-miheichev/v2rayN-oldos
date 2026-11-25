@@ -90,6 +90,8 @@ jobs:
       # pushed from here anyway. Comparing the mirror to upstream, not just
       # the incoming batch, keeps the gate armed even if an earlier review
       # pushed patches but forgot the mirror.
+      # The explicit cache-only default is a narrow exception. Its rebase
+      # must preserve the published fork workflows before the fork can move.
       - name: Stop for manual review when upstream changed its workflows
         id: gate
         env:
@@ -100,6 +102,16 @@ jobs:
           if [[ -z "$changed" ]]; then
             echo "review=false" >> "$GITHUB_OUTPUT"
             echo "No workflow changes; the sync may proceed on its own."
+            exit 0
+          fi
+          if [[ "$changed" == ".github/workflows/build-WebAPI.yml" ]] \
+             && git merge-base --is-ancestor origin/master upstream/master \
+             && python3 scripts/fork/check-cache-only-workflow.py origin/master upstream/master; then
+            {
+              echo "review=false"
+              echo "cache_only=true"
+            } >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'The upstream WebAPI build now declares its cache-only default. This sync can update the product with the reviewed fork workflows while the mirror stays at its last reviewed upstream commit.' | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "review=true" >> "$GITHUB_OUTPUT"
@@ -163,8 +175,14 @@ jobs:
 
       - name: Update the mirror branch
         if: steps.incoming.outputs.count != '0' && steps.gate.outputs.review != 'true'
+        env:
+          CACHE_ONLY: ${{ steps.gate.outputs.cache_only }}
         run: |
           set -euo pipefail
+          if [[ "$CACHE_ONLY" == 'true' ]]; then
+            echo 'The mirror stays at its last reviewed upstream commit.'
+            exit 0
+          fi
           git branch -f master upstream/master
           # Push failures are captured rather than only printed, so the issue
           # this workflow files can name the cause instead of pointing at a log.
@@ -221,6 +239,19 @@ jobs:
             tail -n 120 "${RUNNER_TEMP}/tests.log" | tail -c 20000
           } >> "${RUNNER_TEMP}/sync-failure.txt"
           exit 1
+
+      - name: Verify rebased workflow content
+        if: steps.gate.outputs.cache_only == 'true' && steps.rebase.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          if ! changes="$(git diff --exit-code --name-status "origin/${PATCH_BRANCH}" HEAD -- .github/workflows/)"; then
+            {
+              echo 'Review is required before publishing the rebased workflow tree.'
+              printf '%s\n' "$changes"
+            } | tee -a "${RUNNER_TEMP}/sync-failure.txt"
+            exit 1
+          fi
+          echo 'The rebased workflows match the published patch branch.'
 
       - name: Push the rebased patch stack
         if: steps.rebase.outputs.conflict == 'false'
@@ -281,16 +312,18 @@ jobs:
           fi
           echo "The product branch carries every upstream commit."
 
-      # The issue bodies say "a green run closes this", and doing it by hand
-      # was forgotten twice. Reaching this step means the whole chain held:
-      # mirror current, stack rebased, product rebuilt, nothing behind --
-      # which is exactly the evidence those issues wait for.
+      # A green run here confirms that the rebased stack and the product are current.
       - name: Close resolved sync issues
         if: steps.rebase.outputs.conflict == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CACHE_ONLY: ${{ steps.gate.outputs.cache_only }}
         run: |
           set -euo pipefail
+          result='The mirror, patch stack and product branch are current.'
+          if [[ "$CACHE_ONLY" == 'true' ]]; then
+            result='The patch stack and product branch are current. The mirror retains its last reviewed upstream commit.'
+          fi
           for label in sync-failure upstream-conflict workflows-review; do
             # Fails closed like the filing steps: an API error skips closing
             # rather than guessing; the next green run retries.
@@ -299,7 +332,7 @@ jobs:
               continue
             fi
             for n in $nums; do
-              gh issue close "$n" --comment "Closed automatically: sync run ${{ github.run_id }} completed green -- the mirror, the patch stack and the product branch are all current." \
+              gh issue close "$n" --comment "Closed automatically by sync run ${GITHUB_RUN_ID}. $result" \
                 || echo "Could not close #$n; the next green run will retry."
             done
           done
