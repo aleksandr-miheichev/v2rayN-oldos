@@ -3,6 +3,13 @@
 ###############################################################################
 * text=auto
 
+# Bash requires LF even in Windows checkouts used from Git Bash or WSL.
+*.sh text eol=lf
+
+# Unified-diff context represents an empty line with a required single space.
+# Keep normal source whitespace checks while allowing embedded submodule patches.
+scripts/fork/patches/**/*.patch whitespace=-blank-at-eol
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #
