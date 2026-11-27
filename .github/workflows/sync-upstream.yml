@@ -81,41 +81,56 @@ jobs:
           # the pipe early would turn a large backlog into a SIGPIPE failure.
           [[ "$count" == "0" ]] || git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
 
-      # The owner reads every upstream change to .github/workflows before it
-      # may run in this repository. The gate is also what lets this sync live
-      # without a workflow-scoped credential: GitHub rejects a push that
-      # introduces workflow content the repository has not seen at the tip of
-      # any branch (issues #14, #15, #16), and the permissions block has no
-      # `workflows` key to grant -- so unreviewed CI commits could not be
-      # pushed from here anyway. Comparing the mirror to upstream, not just
-      # the incoming batch, keeps the gate armed even if an earlier review
-      # pushed patches but forgot the mirror.
-      # The explicit cache-only default is a narrow exception. Its rebase
-      # must preserve the published fork workflows before the fork can move.
-      - name: Stop for manual review when upstream changed its workflows
+      - name: Rebase the patch stack
+        id: rebase
+        run: |
+          set -uo pipefail
+          # A no-op when upstream has not moved (the push-to-patches trigger).
+          if git rebase upstream/master; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            git rebase --abort || true
+          fi
+
+      # The owner reviews new runnable workflow content before publishing it.
+      # GITHUB_TOKEN cannot push workflow content the repository has not seen
+      # at the tip of a branch. Compare the mirror with upstream even when the
+      # incoming batch is empty, since the mirror may still await review.
+      # A local rebase determines the effective fork workflow tree. If that
+      # tree is already published, update the source and leave the mirror at
+      # its last reviewed upstream commit.
+      - name: Stop for manual review of workflow changes
         id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBASE_CONFLICT: ${{ steps.rebase.outputs.conflict }}
         run: |
           set -euo pipefail
-          changed="$(git diff --name-only origin/master upstream/master -- .github/workflows/)"
-          if [[ -z "$changed" ]]; then
+          upstream_changes="$(git diff --name-only --no-renames origin/master upstream/master -- .github/workflows/)"
+          fork_changes=''
+          if [[ "$REBASE_CONFLICT" == 'false' ]]; then
+            fork_changes="$(git diff --name-only --no-renames "origin/${PATCH_BRANCH}" HEAD -- .github/workflows/)"
+          fi
+          if [[ -z "$upstream_changes" && -z "$fork_changes" ]]; then
             echo "review=false" >> "$GITHUB_OUTPUT"
-            echo "No workflow changes; the sync may proceed on its own."
+            echo "No workflow changes awaiting review."
             exit 0
           fi
-          if [[ "$changed" == ".github/workflows/build-WebAPI.yml" ]] \
-             && git merge-base --is-ancestor origin/master upstream/master \
-             && python3 scripts/fork/check-cache-only-workflow.py origin/master upstream/master; then
+          if [[ "$REBASE_CONFLICT" == 'false' && -z "$fork_changes" ]] \
+             && git merge-base --is-ancestor origin/master upstream/master; then
             {
               echo "review=false"
-              echo "cache_only=true"
+              echo "defer_mirror=true"
             } >> "$GITHUB_OUTPUT"
-            printf '%s\n' 'The upstream WebAPI build now declares its cache-only default. This sync can update the product with the reviewed fork workflows while the mirror stays at its last reviewed upstream commit.' | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' 'The rebased workflows match the published fork workflows. Source sync may proceed while the mirror stays at its last reviewed upstream commit.' | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "review=true" >> "$GITHUB_OUTPUT"
-          printf 'Upstream changed:\n%s\n' "$changed"
+          printf 'Mirror to upstream:\n%s\n' "${upstream_changes:-(none)}"
+          if [[ -n "$fork_changes" ]]; then
+            printf 'Published to rebased fork:\n%s\n' "$fork_changes"
+          fi
 
           # Fails closed, like every issue-filing step here: an API outage
           # must not be read as "nothing is open" and produce a duplicate.
@@ -134,52 +149,54 @@ jobs:
           # Substring, not a pipe through head: pipefail would turn head
           # closing the pipe early into a SIGPIPE failure on a large diff.
           diff_text="$(git diff origin/master upstream/master -- .github/workflows/)"
+          if [[ -n "$fork_changes" ]]; then
+            fork_diff="$(git diff "origin/${PATCH_BRANCH}" HEAD -- .github/workflows/)"
+            diff_text="$(printf 'Mirror to upstream:\n%s\n\nPublished to rebased fork:\n%s' "$diff_text" "$fork_diff")"
+          fi
 
           body_file="$(mktemp)"
           {
-            printf 'Upstream changed files under `.github/workflows/`, and this fork takes such changes only after a human has read them. The hourly sync parks itself until the review lands.\n\n'
+            printf 'The sync found workflow changes that need review under `.github/workflows/`. It will continue once the reviewed workflow files are published.\n\n'
             printf 'While this issue is open the fork receives no upstream commits at all -- including any product commits waiting in the same batch.\n\n'
             printf 'To review and resume:\n\n'
             printf '```bash\n'
             printf 'git fetch upstream master\n'
             printf 'git checkout patches\n'
             printf 'git rebase upstream/master\n'
-            printf '# read the workflow changes, resolve conflicts if any, then:\n'
+            printf '# review both workflow comparisons below and resolve conflicts if any\n'
             printf '# with the rebase finished, run the same tests as the sync; push only if they pass:\n'
             printf 'dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release\n'
-            printf 'git push origin upstream/master:master   # the mirror first, or the gate stays armed\n'
+            printf 'git push origin upstream/master:master   # after reviewing the mirror workflow diff\n'
             printf 'git push --force-with-lease origin patches\n'
             printf '# the sync rebuilds oldos from patches by itself\n'
             printf '```\n\n'
-            printf 'Both pushes need a credential with the workflow scope; the token this sync runs with does not carry it, which is one of the two reasons this gate exists.\n\n'
+            printf 'A push introducing new workflow content needs a credential with the workflow scope. The sync token does not carry this scope.\n\n'
             printf 'Pushing the mirror with a PAT also starts the workflows upstream triggers on pushes to master (the release builds, plus Code Test when its paths match). They build pure upstream code and publish nothing; the release watchdog ignores mirror-branch push runs, so let them run.\n\n'
-            printf 'Workflow files upstream touched:\n\n'
-            printf '```\n%s\n```\n\n' "$changed"
-            printf 'The change itself:\n\n'
+            printf 'Workflow differences:\n\n'
             printf '```diff\n'
             printf '%s\n' "${diff_text:0:50000}"
             if [[ "${#diff_text}" -gt 50000 ]]; then
-              printf '... (truncated; the full diff is one git diff origin/master upstream/master -- .github/workflows/ away)\n'
+              printf '... (truncated; compare both refs with git diff under .github/workflows/ for the full changes)\n'
             fi
             printf '```\n\n'
             printf 'Upstream commits waiting behind this review:\n\n'
             printf '```\n'
-            git log --oneline --max-count=30 "${PATCH_BRANCH}..upstream/master"
+            git log --oneline --max-count=30 "origin/${PATCH_BRANCH}..upstream/master"
             printf '```\n\n'
             printf 'The first sync run that gets the fork current again closes this issue automatically.\n'
           } > "$body_file"
 
-          gh issue create --title 'Upstream changed .github/workflows -- review before it syncs' \
+          gh issue create --title 'Workflow changes need review before upstream sync' \
             --label workflows-review --body-file "$body_file"
           exit 1
 
       - name: Update the mirror branch
-        if: steps.incoming.outputs.count != '0' && steps.gate.outputs.review != 'true'
+        if: steps.gate.outputs.review == 'false' && steps.incoming.outputs.count != '0'
         env:
-          CACHE_ONLY: ${{ steps.gate.outputs.cache_only }}
+          DEFER_MIRROR: ${{ steps.gate.outputs.defer_mirror }}
         run: |
           set -euo pipefail
-          if [[ "$CACHE_ONLY" == 'true' ]]; then
+          if [[ "$DEFER_MIRROR" == 'true' ]]; then
             echo 'The mirror stays at its last reviewed upstream commit.'
             exit 0
           fi
@@ -192,19 +209,6 @@ jobs:
           fi
           printf '%s\n' "$out"
 
-      - name: Rebase the patch stack
-        id: rebase
-        if: steps.gate.outputs.review != 'true'
-        run: |
-          set -uo pipefail
-          # A no-op when upstream has not moved (the push-to-patches trigger).
-          if git rebase upstream/master; then
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
-            git rebase --abort || true
-          fi
-
       # The failure git cannot report as a conflict. Upstream can drop a
       # dependency the fork's own files rely on without touching a single line
       # they contain, and the rebase then succeeds: that is how the migration
@@ -213,13 +217,13 @@ jobs:
       # was cut and the release could no longer be completed. Compiling here,
       # before anything is published, is the only thing that sees this class.
       - name: Setup .NET
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         uses: actions/setup-dotnet@v6
         # Share the exact published SDK used by builds and release verification.
         with: { global-json-file: global.json }
 
       - name: Build and run the tests on the rebased tree
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         run: |
           set -uo pipefail
           if dotnet run --project v2rayN/ServiceLib.Tests/ServiceLib.Tests.csproj -c Release \
@@ -241,10 +245,10 @@ jobs:
           exit 1
 
       - name: Verify rebased workflow content
-        if: steps.gate.outputs.cache_only == 'true' && steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         run: |
           set -euo pipefail
-          if ! changes="$(git diff --exit-code --name-status "origin/${PATCH_BRANCH}" HEAD -- .github/workflows/)"; then
+          if ! changes="$(git diff --exit-code --name-status --no-renames "origin/${PATCH_BRANCH}" HEAD -- .github/workflows/)"; then
             {
               echo 'Review is required before publishing the rebased workflow tree.'
               printf '%s\n' "$changes"
@@ -254,7 +258,7 @@ jobs:
           echo 'The rebased workflows match the published patch branch.'
 
       - name: Push the rebased patch stack
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         run: |
           set -euo pipefail
           if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/${PATCH_BRANCH}")" ]]; then
@@ -267,7 +271,7 @@ jobs:
           fi
 
       - name: Rebuild the product branch as upstream plus one commit
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         run: |
           set -euo pipefail
           # The rebased patch branch's tree IS the product tree, so the product
@@ -300,7 +304,7 @@ jobs:
       # A green run that leaves the fork behind is false comfort: every other
       # pipeline stays green while releases ship progressively older code.
       - name: Fail if the product branch is still behind upstream
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         run: |
           set -euo pipefail
           git fetch -q --no-tags origin "${PRODUCT_BRANCH}"
@@ -314,14 +318,14 @@ jobs:
 
       # A green run here confirms that the rebased stack and the product are current.
       - name: Close resolved sync issues
-        if: steps.rebase.outputs.conflict == 'false'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHE_ONLY: ${{ steps.gate.outputs.cache_only }}
+          DEFER_MIRROR: ${{ steps.gate.outputs.defer_mirror }}
         run: |
           set -euo pipefail
           result='The mirror, patch stack and product branch are current.'
-          if [[ "$CACHE_ONLY" == 'true' ]]; then
+          if [[ "$DEFER_MIRROR" == 'true' ]]; then
             result='The patch stack and product branch are current. The mirror retains its last reviewed upstream commit.'
           fi
           for label in sync-failure upstream-conflict workflows-review; do
@@ -339,7 +343,7 @@ jobs:
 
       - name: Open an issue when the rebase conflicts
         id: conflict_issue
-        if: steps.rebase.outputs.conflict == 'true'
+        if: steps.gate.outputs.review == 'false' && steps.rebase.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
