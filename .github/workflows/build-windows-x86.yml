@@ -1,4 +1,5 @@
 name: release Windows x86
+# Part of this fork's release pipeline; the product branch is oldos.
 
 on:
   workflow_dispatch:
@@ -9,13 +10,20 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 jobs:
   package-x86:
     name: build and release windows x86 WPF & Avalonia
     if: inputs.release_tag != ''
     runs-on: windows-latest
+    env:
+      # Pin official x86 releases: a moving x64 bundle can report a version
+      # that has no corresponding upstream release tag (issue #35).
+      XRAY_VERSION: '26.10.21'
+      XRAY_SHA256: '83f81c0ae86bb515c04f52e79383f4bb59c62797f17e26cb1fdccd742450c235'
+      SING_BOX_VERSION: '1.14.4'
+      SING_BOX_SHA256: '7994c40c5c1316777bdd29216a5dd7f134f894fad0afaa1efe7b872e60ed1dd9'
 
     strategy:
       fail-fast: false
@@ -35,6 +43,10 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Apply the fork's submodule patches
+        shell: bash
+        run: bash scripts/fork/apply-fork-patches.sh
+
       - name: Purge SDKs
         shell: pwsh
         run: |
@@ -51,10 +63,10 @@ jobs:
           echo "After:"
           dotnet --list-sdks 2>$null; $LASTEXITCODE=0
 
-      - name: Setup .NET 10.0.1xx
+      - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.1xx
+          global-json-file: global.json
 
       - name: Publish ${{ matrix.flavor }} win-x86
         shell: pwsh
@@ -83,42 +95,6 @@ jobs:
             -p:EnableWindowsTargeting=true `
             -o "publish/${{ matrix.flavor }}"
 
-      - name: Detect bundled core versions
-        id: detect-core
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          New-Item -ItemType Directory -Force -Path "tmp/probe" | Out-Null
-
-          Invoke-WebRequest -Uri "https://github.com/2dust/v2rayN-core-bin/raw/refs/heads/master/v2rayN-windows-64/bin/xray/xray.exe" -OutFile "tmp/probe/xray.exe"
-          $xrayOutput = (& "tmp/probe/xray.exe" version) -join "`n"
-          Write-Host $xrayOutput
-
-          $xrayMatch = [regex]::Match($xrayOutput, 'Xray\s+([0-9.]+)')
-          if ($xrayMatch.Success) {
-            $xrayVer = $xrayMatch.Groups[1].Value
-          } else {
-            throw "Failed to detect Xray version"
-          }
-
-          Invoke-WebRequest -Uri "https://github.com/2dust/v2rayN-core-bin/raw/refs/heads/master/v2rayN-windows-64/bin/sing_box/sing-box.exe" -OutFile "tmp/probe/sing-box.exe"
-          $singOutput = (& "tmp/probe/sing-box.exe" version) -join "`n"
-          Write-Host $singOutput
-
-          $singMatch = [regex]::Match($singOutput, 'sing-box version\s+([0-9.]+)')
-          if ($singMatch.Success) {
-            $singVer = $singMatch.Groups[1].Value
-          } else {
-            throw "Failed to detect sing-box version"
-          }
-
-          Write-Host "Bundled Xray version: $xrayVer"
-          Write-Host "Bundled sing-box version: $singVer"
-
-          "xray_version=$xrayVer" >> $env:GITHUB_OUTPUT
-          "sing_version=$singVer" >> $env:GITHUB_OUTPUT
-
       - name: Download x86 cores and rule assets
         shell: pwsh
         env:
@@ -140,8 +116,8 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $xrayDir, $singDir, $srssDir | Out-Null
 
-          $xrayVer = "${{ steps.detect-core.outputs.xray_version }}"
-          $singVer = "${{ steps.detect-core.outputs.sing_version }}"
+          $xrayVer = $env:XRAY_VERSION
+          $singVer = $env:SING_BOX_VERSION
 
           $xrayTag = "v$xrayVer"
           $singTag = "v$singVer"
@@ -157,6 +133,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "tmp" | Out-Null
 
           Invoke-WebRequest -Uri $xrayUrl -OutFile "tmp/xray.zip"
+          if ((Get-FileHash "tmp/xray.zip" -Algorithm SHA256).Hash -ne $env:XRAY_SHA256) {
+            throw "Xray archive SHA256 mismatch"
+          }
           Expand-Archive -Force "tmp/xray.zip" "tmp/xray"
 
           Get-ChildItem "tmp/xray" -Recurse -Include "*.exe","*.dll" | ForEach-Object {
@@ -164,6 +143,9 @@ jobs:
           }
 
           Invoke-WebRequest -Uri $singUrl -OutFile "tmp/sing-box.zip"
+          if ((Get-FileHash "tmp/sing-box.zip" -Algorithm SHA256).Hash -ne $env:SING_BOX_SHA256) {
+            throw "sing-box archive SHA256 mismatch"
+          }
           Expand-Archive -Force "tmp/sing-box.zip" "tmp/sing-box"
 
           $singExe = Get-ChildItem "tmp/sing-box" -Recurse -Filter "sing-box.exe" | Select-Object -First 1
@@ -213,6 +195,29 @@ jobs:
             Invoke-WebRequest -Uri "https://raw.githubusercontent.com/2dust/sing-box-rules/refs/heads/rule-set-geosite/$f" -OutFile "$srssDir/$f"
           }
 
+      - name: Verify packaged x86 core startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cores = @(
+            @{ Path = "publish/${{ matrix.flavor }}/bin/xray/xray.exe"; Version = $env:XRAY_VERSION; Pattern = '^Xray\s+([0-9.]+)' },
+            @{ Path = "publish/${{ matrix.flavor }}/bin/sing_box/sing-box.exe"; Version = $env:SING_BOX_VERSION; Pattern = '^sing-box version\s+([0-9.]+)' }
+          )
+          foreach ($core in $cores) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $core.Path))
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x14c) {
+              throw "Expected an x86 PE binary: $($core.Path)"
+            }
+            $output = (& $core.Path version) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "Core startup failed: $($core.Path)" }
+            $match = [regex]::Match($output, $core.Pattern)
+            if (-not $match.Success -or $match.Groups[1].Value -ne $core.Version) {
+              throw "Unexpected core version: $output"
+            }
+            Write-Host $output
+          }
+
       - name: Package zip
         shell: pwsh
         run: |
@@ -245,3 +250,21 @@ jobs:
       file_pattern: '*.zip'
     secrets:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+  nudge-finalize:
+    name: ask the finalizer to look now
+    if: inputs.release_tag != ''
+    needs: [ release-x86 ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch finalize-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Completion events of token-dispatched runs are never delivered
+          # (recursion prevention), so promotion used to wait for a cron tick
+          # -- up to half an hour of a complete release sitting as a
+          # prerelease. workflow_dispatch is the one event the default token
+          # may create, so the build asks the finalizer to look right now.
+          gh workflow run finalize-release.yml --ref oldos
